@@ -80,7 +80,12 @@ function parseHeaderLines(text) {
 function loadHttpHistory() {
   try {
     const raw = JSON.parse(localStorage.getItem('jdwp-http-history') || '[]')
-    return Array.isArray(raw) ? raw : []
+    if (!Array.isArray(raw)) return []
+    // Never restore persisted bearer tokens — they are memory-only per session.
+    for (const h of raw) {
+      if (h && typeof h === 'object') delete h.bearer
+    }
+    return raw
   } catch {
     return []
   }
@@ -279,7 +284,12 @@ export default function App() {
   }, [sidebarCollapsed])
 
   useEffect(() => {
-    localStorage.setItem('jdwp-http-history', JSON.stringify(httpHistory.slice(0, 24)))
+    // Persist history WITHOUT bearer tokens (secrets stay memory-only).
+    const safe = httpHistory.slice(0, 24).map((h) => {
+      const { bearer, ...rest } = h || {}
+      return rest
+    })
+    localStorage.setItem('jdwp-http-history', JSON.stringify(safe))
   }, [httpHistory])
 
   useEffect(() => {

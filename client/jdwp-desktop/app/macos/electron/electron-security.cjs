@@ -52,9 +52,13 @@ function setupContentSecurityPolicy(devServerOrigin) {
     }
   }
 
+  // Vite's production build uses external hashed assets, so scripts can be
+  // locked down fully; the dev server needs inline for HMR/React refresh.
+  const scriptSrc = devServerOrigin ? "script-src 'self' 'unsafe-inline'" : "script-src 'self'"
+
   const csp = [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    scriptSrc,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data: https://fonts.gstatic.com",

@@ -21,12 +21,11 @@ public class UserController {
     
     @GetMapping
     public ResponseEntity<List<User>> getAllUsers() {
-        String jony_jony="Yes-Papa";
         logger.info("========================================");
         logger.info("[REQUEST RECEIVED] GET /api/users");
         logger.info("========================================");
-        logger.info("[CONTROL ENTERED] UserController.getAllUsers() (before line BP: seed uses ~30)");
-        // BREAKPOINT: Seed "GET /api/users" → line 30 (int a); adjust if your IDE line numbers differ
+        logger.info("[CONTROL ENTERED] UserController.getAllUsers()");
+        // BREAKPOINT TARGET: line 29 — set a breakpoint here and call GET /api/users
         int a = 20;
         logger.info("[DEBUG] About to call userService.getAllUsers()");
         List<User> users = userService.getAllUsers();

@@ -43,6 +43,15 @@ public class JdwpService {
     /** Session-scoped breakpoint hit counts (for analytics UI). */
     private final Map<String, AtomicInteger> breakpointHitCounts = new ConcurrentHashMap<>();
 
+    /**
+     * JDWP event pump. JDI only applies SUSPEND_* policies when the debugger
+     * READS the EventSet — without this thread breakpoints and steps would
+     * fire on the wire but never suspend anything.
+     */
+    private volatile Thread eventPumpThread;
+    /** Most recent breakpoint hit: bpId, threadName, className, methodName, lineNumber, timestamp. */
+    private volatile Map<String, Object> lastBreakpointHit;
+
     @Autowired(required = false)
     private com.jdwp.client.service.LogReceiverService logReceiverService;
     
@@ -156,6 +165,7 @@ public class JdwpService {
             // Inject logging agent in background so we return success to frontend immediately.
             // Agent works independently of JDWP; blocking here was preventing the connect response.
             logger.info("[JDWP CLIENT] Starting agent injection in background (connect response will return now).");
+            startEventPump();
             ExecutorService agentExecutor = Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "jdwp-agent-inject");
                 t.setDaemon(true);
@@ -213,6 +223,7 @@ public class JdwpService {
     
     public synchronized void disconnect() {
         logger.info("[JDWP CLIENT] Disconnecting from JDWP server...");
+        stopEventPump();
         if (vm != null) {
             try {
                 logger.info("[JDWP CLIENT] Disposing VM connection...");
@@ -671,6 +682,98 @@ public class JdwpService {
         }
     }
 
+    /**
+     * Background thread that drains the JDWP EventQueue.
+     *
+     * JDI semantics: the target JVM suspends a thread (per the event request's
+     * suspend policy) only when the debugger reads the EventSet. This pump is
+     * therefore what makes breakpoints/step events physically suspend threads.
+     * Suspension policy decisions (keep vs auto-resume non-matching requests)
+     * stay with {@link #runConditionalResumePass()}.
+     */
+    private synchronized void startEventPump() {
+        stopEventPump();
+        Thread pump = new Thread(() -> {
+            logger.info("[JDWP CLIENT] JDWP event pump started");
+            while (!Thread.currentThread().isInterrupted()) {
+                VirtualMachine currentVm = this.vm;
+                if (currentVm == null) {
+                    break;
+                }
+                try {
+                    com.sun.jdi.event.EventSet events = currentVm.eventQueue().remove();
+                    for (com.sun.jdi.event.Event event : events) {
+                        if (event instanceof com.sun.jdi.event.BreakpointEvent) {
+                            recordEventHit((com.sun.jdi.event.BreakpointEvent) event);
+                        } else if (event instanceof com.sun.jdi.event.StepEvent) {
+                            logger.debug("[JDWP CLIENT] Step completed on thread {}",
+                                    ((com.sun.jdi.event.StepEvent) event).thread().name());
+                        } else if (event instanceof com.sun.jdi.event.ExceptionEvent) {
+                            com.sun.jdi.event.ExceptionEvent ee = (com.sun.jdi.event.ExceptionEvent) event;
+                            logger.debug("[JDWP CLIENT] Exception event: {}",
+                                    ee.exception() == null || ee.exception().referenceType() == null ? "?"
+                                            : ee.exception().referenceType().name());
+                        }
+                    }
+                    // Do NOT resume here: the conditional-resume pass decides
+                    // which threads stay suspended (request-scoped debugging).
+                } catch (com.sun.jdi.VMDisconnectedException e) {
+                    logger.info("[JDWP CLIENT] Event pump stopping (VM disconnected)");
+                    break;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    logger.debug("[JDWP CLIENT] Event pump error: {}", e.getMessage());
+                }
+            }
+            logger.info("[JDWP CLIENT] JDWP event pump stopped");
+        }, "jdwp-event-pump");
+        pump.setDaemon(true);
+        this.eventPumpThread = pump;
+        pump.start();
+    }
+
+    private synchronized void stopEventPump() {
+        Thread pump = this.eventPumpThread;
+        if (pump != null && pump.isAlive()) {
+            pump.interrupt();
+        }
+        this.eventPumpThread = null;
+    }
+
+    /** Capture hit metadata for the UI/wait-for-breakpoint API and analytics counters. */
+    private void recordEventHit(com.sun.jdi.event.BreakpointEvent event) {
+        try {
+            Location loc = event.location();
+            String className = loc.declaringType().name();
+            int lineNumber = loc.lineNumber();
+            String threadName = event.thread() != null ? event.thread().name() : "unknown";
+            String bpId = className + ":" + lineNumber;
+
+            Map<String, Object> hit = new HashMap<>();
+            hit.put("breakpointId", bpId);
+            hit.put("threadName", threadName);
+            hit.put("className", className);
+            hit.put("methodName", loc.method().name());
+            hit.put("lineNumber", lineNumber);
+            hit.put("timestamp", System.currentTimeMillis());
+            hit.put("isConditional", conditionalBreakpoints.containsKey(bpId));
+            hit.put("targetRequestId", conditionalBreakpoints.get(bpId));
+            this.lastBreakpointHit = hit;
+            recordBreakpointHit(bpId);
+            logger.info("[JDWP CLIENT] ✓ BREAKPOINT HIT: {} on thread {} at {}:{}",
+                    bpId, threadName, className, lineNumber);
+        } catch (Exception e) {
+            logger.debug("[JDWP CLIENT] Failed to record breakpoint hit: {}", e.getMessage());
+        }
+    }
+
+    /** Latest breakpoint hit for polling APIs; null when nothing has hit yet. */
+    public Map<String, Object> getLastBreakpointHit() {
+        return lastBreakpointHit == null ? null : new HashMap<>(lastBreakpointHit);
+    }
+
     private synchronized void startConditionalResumeThreadIfNeeded() {
         if (conditionalResumeThread != null && conditionalResumeThread.isAlive()) {
             return;
@@ -900,6 +1003,18 @@ public class JdwpService {
 
         while (System.currentTimeMillis() - startTime < timeoutMs) {
             try {
+                // Fast path: the event pump records hits as they happen.
+                Map<String, Object> lastHit = lastBreakpointHit;
+                if (lastHit != null) {
+                    long hitAt = lastHit.get("timestamp") instanceof Long ? (Long) lastHit.get("timestamp") : 0L;
+                    if (hitAt >= startTime) {
+                        Map<String, Object> result = new HashMap<>(lastHit);
+                        result.put("success", true);
+                        result.put("autoResumedThreads", autoResumedCount);
+                        return result;
+                    }
+                }
+
                 Map<String, Object> pollResult;
                 synchronized (this) {
                     if (!isConnected()) {

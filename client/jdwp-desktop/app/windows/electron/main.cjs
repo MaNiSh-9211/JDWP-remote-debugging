@@ -120,6 +120,8 @@ ipcMain.handle('sanitize-api-base', (_, url) => {
 
 const SEED_FILE_MAX_BYTES = 512 * 1024
 
+// Seed files may only be read from the suggested repo root (or its parents),
+// never from arbitrary disk locations.
 ipcMain.handle('read-text-file-allowed', async (_, rawPath) => {
   const trimmed = String(rawPath || '').trim()
   if (!trimmed) {
@@ -128,6 +130,10 @@ ipcMain.handle('read-text-file-allowed', async (_, rawPath) => {
   const resolved = path.resolve(trimmed)
   if (!resolved.toLowerCase().endsWith('.json')) {
     throw new Error('Only .json seed files are allowed')
+  }
+  const root = resolveSuggestedSourceRoot(__dirname)
+  if (!root || !isInsideRoot(root, resolved)) {
+    throw new Error('Seed files must live inside the detected repository root')
   }
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
     throw new Error('File not found')
@@ -259,6 +265,9 @@ ipcMain.handle('list-dir-under-root', async (_, rootRaw, relRaw) => {
 ipcMain.handle('git-clone-repo', async (_, payload) => {
   const url = String(payload?.url || '').trim()
   if (!url) return { ok: false, error: 'Empty URL' }
+  // Only https(s) and ssh git URLs; reject anything with shell-hostile characters.
+  const urlOk = /^(https:\/\/[\w.-]+(:\d+)?(\/[\w./~%-]*)?(\.git)?|git@[\w.-]+:[\w./~-]+(\.git)?)$/.test(url)
+  if (!urlOk) return { ok: false, error: 'Only https:// or git@… URLs are allowed' }
   let parent
   const pd = payload?.parentDir
   if (pd && String(pd).trim()) {
@@ -284,9 +293,9 @@ ipcMain.handle('git-clone-repo', async (_, payload) => {
     dest = path.join(parent, `${safeBase}-${n}`)
   }
   return await new Promise((resolve) => {
-    const proc = spawn('git', ['clone', '--depth', '1', url, dest], {
+    const proc = spawn('git', ['clone', '--depth', '1', '--', url, dest], {
       cwd: parent,
-      shell: process.platform === 'win32',
+      shell: false,
     })
     let stderr = ''
     proc.stderr?.on('data', (d) => {

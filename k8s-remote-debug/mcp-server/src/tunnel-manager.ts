@@ -58,15 +58,22 @@ export class TunnelManager extends EventEmitter {
     try {
       const process = await this.startPortForward(tunnelInfo);
       this.processes.set(tunnelId, process);
-      
+
       // Wait for connection
       await this.waitForConnection(tunnelInfo);
-      
+
       tunnelInfo.status = 'active';
       this.emit('tunnel-created', tunnelInfo);
-      
+
       return tunnelInfo;
     } catch (error) {
+      // Never leak a half-open kubectl process or a stale map entry.
+      const proc = this.processes.get(tunnelId);
+      if (proc) {
+        try { proc.kill('SIGTERM'); } catch { /* already gone */ }
+        this.processes.delete(tunnelId);
+      }
+      this.tunnels.delete(tunnelId);
       tunnelInfo.status = 'error';
       tunnelInfo.error = error instanceof Error ? error.message : String(error);
       this.emit('tunnel-error', tunnelInfo, error);
@@ -119,6 +126,7 @@ export class TunnelManager extends EventEmitter {
       console.error(`[TunnelManager] ${tunnel.id} exited with code ${code}`);
       tunnel.status = 'disconnected';
       this.processes.delete(tunnel.id);
+      this.tunnels.delete(tunnel.id);
       this.emit('tunnel-closed', tunnel);
     });
 
@@ -221,7 +229,7 @@ export class TunnelManager extends EventEmitter {
   }
 
   /**
-   * Start periodic health checks
+   * Start periodic health checks; prune dead tunnels so ports are reusable.
    */
   private startHealthCheck(): void {
     this.healthCheckInterval = setInterval(async () => {
@@ -229,6 +237,7 @@ export class TunnelManager extends EventEmitter {
         if (tunnel.status === 'active') {
           const healthy = await this.checkTunnelHealth(tunnelId);
           if (!healthy) {
+            this.tunnels.delete(tunnelId);
             this.emit('tunnel-unhealthy', tunnel);
           }
         }
@@ -237,27 +246,32 @@ export class TunnelManager extends EventEmitter {
   }
 
   /**
-   * Find an available port
+   * Find an available port: prefer the requested one, verify with a real
+   * socket bind, then scan upward. Avoids colliding with other apps too.
    */
   private async findAvailablePort(preferredPort: number): Promise<number> {
-    // Check if preferred port is in use
     const usedPorts = new Set(
       Array.from(this.tunnels.values()).map(t => t.localPort)
     );
-    
-    if (!usedPorts.has(preferredPort)) {
-      return preferredPort;
-    }
 
-    // Find next available port
-    let port = preferredPort + 1;
-    while (usedPorts.has(port)) {
-      port++;
-      if (port > 65535) {
-        throw new Error('No available ports');
+    let port = preferredPort;
+    while (port <= 65535) {
+      if (!usedPorts.has(port) && await this.isPortFree(port)) {
+        return port;
       }
+      port++;
     }
-    return port;
+    throw new Error('No available ports');
+  }
+
+  private isPortFree(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const net = require('net') as typeof import('net');
+      const srv = net.createServer();
+      srv.once('error', () => resolve(false));
+      srv.once('listening', () => srv.close(() => resolve(true)));
+      srv.listen(port, '127.0.0.1');
+    });
   }
 
   private sleep(ms: number): Promise<void> {

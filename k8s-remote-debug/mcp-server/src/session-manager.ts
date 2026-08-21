@@ -34,7 +34,11 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Create a new debug session
+   * Create a new debug session.
+   *
+   * The underlying Debug Client holds a single JDWP connection at a time,
+   * so only one active session is allowed; creating a new session
+   * automatically closes any previous one.
    */
   async createSession(
     podName: string,
@@ -42,50 +46,69 @@ export class SessionManager extends EventEmitter {
     jdwpPort: number,
     httpPort?: number
   ): Promise<DebugSession> {
+    // Enforce single-active-session semantics (backend has one VM connection).
+    const existing = Array.from(this.sessions.keys());
+    for (const id of existing) {
+      console.error(`[SessionManager] Closing previous session ${id} (single-session mode)`);
+      await this.closeSession(id);
+    }
+
     const sessionId = uuidv4();
     const requestId = `debug-${sessionId.slice(0, 8)}`;
 
-    // Create JDWP tunnel
-    const jdwpTunnel = await this.tunnelManager.createTunnel(
-      podName,
-      jdwpPort,
-      undefined,
-      'jdwp'
-    );
-
-    // Optionally create HTTP tunnel for triggering requests
-    let httpTunnelId: string | undefined;
-    if (httpPort) {
-      const httpTunnel = await this.tunnelManager.createTunnel(
+    // Track created tunnels so a later failure never leaks them.
+    const createdTunnelIds: string[] = [];
+    try {
+      // Create JDWP tunnel
+      const jdwpTunnel = await this.tunnelManager.createTunnel(
         podName,
-        httpPort,
+        jdwpPort,
         undefined,
-        'http'
+        'jdwp'
       );
-      httpTunnelId = httpTunnel.id;
+      createdTunnelIds.push(jdwpTunnel.id);
+
+      // Optionally create HTTP tunnel for triggering requests
+      let httpTunnelId: string | undefined;
+      if (httpPort) {
+        const httpTunnel = await this.tunnelManager.createTunnel(
+          podName,
+          httpPort,
+          undefined,
+          'http'
+        );
+        createdTunnelIds.push(httpTunnel.id);
+        httpTunnelId = httpTunnel.id;
+      }
+
+      // Connect JDWP client
+      await this.jdwpClient.connect('localhost', jdwpTunnel.localPort);
+
+      const session: DebugSession = {
+        id: sessionId,
+        requestId,
+        podName,
+        namespace,
+        jdwpTunnelId: jdwpTunnel.id,
+        httpTunnelId,
+        status: 'ready',
+        breakpoints: [],
+        createdAt: new Date(),
+        lastActivity: new Date()
+      };
+
+      this.sessions.set(sessionId, session);
+      this.requestIdToSession.set(requestId, sessionId);
+
+      this.emit('session-created', session);
+      return session;
+    } catch (error) {
+      // Roll back tunnels created before the failure.
+      for (const tunnelId of createdTunnelIds) {
+        try { await this.tunnelManager.closeTunnel(tunnelId); } catch { /* ignore */ }
+      }
+      throw error;
     }
-
-    // Connect JDWP client
-    await this.jdwpClient.connect('localhost', jdwpTunnel.localPort);
-
-    const session: DebugSession = {
-      id: sessionId,
-      requestId,
-      podName,
-      namespace,
-      jdwpTunnelId: jdwpTunnel.id,
-      httpTunnelId,
-      status: 'ready',
-      breakpoints: [],
-      createdAt: new Date(),
-      lastActivity: new Date()
-    };
-
-    this.sessions.set(sessionId, session);
-    this.requestIdToSession.set(requestId, sessionId);
-
-    this.emit('session-created', session);
-    return session;
   }
 
   /**

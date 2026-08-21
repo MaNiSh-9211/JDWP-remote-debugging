@@ -1533,6 +1533,8 @@ Example workflow:
     if (this.javaProcess) {
       this.javaProcess.kill();
     }
+    // Kill any target app / restarted client processes we spawned.
+    await this.jdwpClient.killSpawnedChildren();
     await this.server.close();
   }
 }
@@ -1541,14 +1543,21 @@ Example workflow:
 const server = new JdwpMcpServer();
 server.run().catch(console.error);
 
-// Handle shutdown
-process.on('SIGINT', async () => {
-  await server.shutdown();
-  process.exit(0);
+let shuttingDown = false;
+process.on('exit', () => {
+  // Synchronous best-effort cleanup: Windows hosts often kill without signals.
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try { server['javaProcess']?.kill(); } catch { /* ignore */ }
 });
 
-process.on('SIGTERM', async () => {
+async function gracefulShutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   await server.shutdown();
   process.exit(0);
-});
+}
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
 

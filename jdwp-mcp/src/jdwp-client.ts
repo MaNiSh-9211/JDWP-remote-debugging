@@ -50,9 +50,24 @@ function filterThreads(threads: any[]): any[] {
   });
 }
 
+/**
+ * Coerce tool-supplied port values to a strict TCP port integer.
+ * Tool args are not schema-validated at runtime by the MCP SDK, so this is
+ * the guard against shell interpolation downstream.
+ */
+export function sanitizePort(value: unknown): number {
+  const n = typeof value === 'string' ? Number(value) : value;
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error(`Invalid port: ${JSON.stringify(value)}`);
+  }
+  return n;
+}
+
 export class JdwpClient {
   private apiBase: string;
   private axiosInstance: AxiosInstance;
+  /** Child processes we spawned (target app, restarted client) — killed on shutdown. */
+  private spawnedChildren = new Set<any>();
 
   constructor(apiBase: string) {
     this.apiBase = apiBase;
@@ -60,6 +75,33 @@ export class JdwpClient {
       baseURL: apiBase,
       timeout: 30000,
     });
+  }
+
+  /** Terminate every child process this client spawned (best effort). */
+  async killSpawnedChildren(): Promise<void> {
+    for (const child of this.spawnedChildren) {
+      try {
+        if (child.pid && !child.killed) {
+          if (process.platform === 'win32') {
+            const { exec } = await import('child_process');
+            await new Promise<void>((resolve) =>
+              exec(`taskkill /PID ${child.pid} /T /F`, () => resolve())
+            );
+          } else {
+            try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    this.spawnedChildren.clear();
+  }
+
+  private trackChild(child: import('child_process').ChildProcess): import('child_process').ChildProcess {
+    this.spawnedChildren.add(child);
+    child.on('exit', () => this.spawnedChildren.delete(child));
+    return child;
   }
 
   private formatResponse(data: any, isError = false) {
@@ -1568,8 +1610,8 @@ export class JdwpClient {
     jdwpPort?: number;
   } = {}): Promise<any> {
     const { exec } = await import('child_process');
-    const appPort = options.port || 8081;
-    const jdwpPort = options.jdwpPort || 5005;
+    const appPort = sanitizePort(options.port ?? 8081);
+    const jdwpPort = sanitizePort(options.jdwpPort ?? 5005);
 
     const result: any = {
       success: false,
@@ -1735,12 +1777,12 @@ export class JdwpClient {
     try {
       const workingDir = options.workingDir || path.dirname(jarPath);
       
-      const javaProcess = spawn('java', javaArgs, {
+      const javaProcess = this.trackChild(spawn('java', javaArgs, {
         cwd: workingDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
         shell: false,
-      });
+      }));
 
       javaProcess.unref();
       
@@ -2148,9 +2190,10 @@ export class JdwpClient {
     const path = await import('path');
     const fs = await import('fs');
     
-    const port = options.port || 8083;
+    const port = sanitizePort(options.port ?? 8083);
     const waitForReady = options.waitForReady !== false;
-    const jvmOptions = options.jvmOptions || [];
+    // Only pass through safe JVM options (flags and -Dkey=value style properties).
+    const jvmOptions = (options.jvmOptions || []).filter((o) => /^[-A-Za-z0-9._=:/]+$/.test(String(o)));
 
     const result: any = {
       success: false,
@@ -2239,12 +2282,12 @@ export class JdwpClient {
     result.command = `java ${javaArgs.join(' ')}`;
 
     try {
-      const javaProcess = spawn('java', javaArgs, {
+      const javaProcess = this.trackChild(spawn('java', javaArgs, {
         cwd: path.dirname(jarPath),
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
         shell: false,
-      });
+      }));
 
       // Don't wait for the process - let it run in background
       javaProcess.unref();
