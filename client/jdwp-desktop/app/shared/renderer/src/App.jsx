@@ -124,6 +124,7 @@ export default function App() {
   const [bpClass, setBpClass] = useState('')
   const [bpLine, setBpLine] = useState('')
   const [bpTriggerUrl, setBpTriggerUrl] = useState('')
+  const [bpRequestId, setBpRequestId] = useState('')
   const [excClass, setExcClass] = useState('')
   const [evalExpr, setEvalExpr] = useState('')
   const [evalOut, setEvalOut] = useState('')
@@ -1008,6 +1009,31 @@ export default function App() {
     [debugSelectedPod],
   )
 
+  // Read-only pod logs via the allow-listed kubectl shell.
+  const [podLogs, setPodLogs] = useState(null) // { pod, text }
+  const [podLogsLoading, setPodLogsLoading] = useState(false)
+
+  const fetchPodLogs = useCallback(async (podName) => {
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.clusterExec) return
+    if (podLogs?.pod === podName) { setPodLogs(null); return } // toggle off
+    setPodLogsLoading(true)
+    try {
+      const res = await electron.clusterExec({
+        context: k8sContext,
+        namespace: (k8sNamespace || 'default').trim(),
+        kubeconfig: k8sKubeconfig,
+        commandLine: `logs ${podName} --tail=100`,
+      })
+      setPodLogs({
+        pod: podName,
+        text: res?.ok ? String(res.stdout || '(no output)') : `kubectl failed: ${res?.error || 'unknown'}`,
+      })
+    } finally {
+      setPodLogsLoading(false)
+    }
+  }, [k8sContext, k8sNamespace, k8sKubeconfig, podLogs])
+
   const seedBreakpointsFromApi = async () => {
     if (!connected) {
       showToast('Connect JDWP to the target VM first', true)
@@ -1178,12 +1204,15 @@ export default function App() {
       showToast('Class and line required', true)
       return
     }
+    const reqId = bpRequestId.trim()
     setBusy(true)
     let ok
     let data
     try {
       const r = await unwrap(
-        debugApi.setBreakpoint(cn, ln, bpTriggerUrl.trim() || undefined),
+        reqId
+          ? debugApi.setConditionalBreakpoint(cn, ln, reqId, bpTriggerUrl.trim() || undefined)
+          : debugApi.setBreakpoint(cn, ln, bpTriggerUrl.trim() || undefined),
       )
       ok = r.ok
       data = r.data
@@ -1191,8 +1220,9 @@ export default function App() {
       setBusy(false)
     }
     if (ok && data.success !== false) {
-      showToast(data.message || 'Breakpoint set')
+      showToast(data.message || (reqId ? 'Conditional breakpoint set' : 'Breakpoint set'))
       setBpLine('')
+      setBpRequestId('')
       await refreshBreakpoints()
     } else showToast(data?.message || 'Breakpoint failed', true)
   }
@@ -1292,6 +1322,79 @@ export default function App() {
     }
     if (ok && data.threads) setThreadDump(data.threads)
     else showToast('Thread dump failed', true)
+  }
+
+  // ---- Session report export (Markdown) ------------------------------------
+  const exportSessionReport = async () => {
+    if (!connected) {
+      showToast('Connect to a VM first', true)
+      return
+    }
+    setBusy(true)
+    try {
+      const [statusR, bpR, hitsR, threadsR] = await Promise.all([
+        unwrap(debugApi.status()),
+        unwrap(debugApi.listBreakpoints()),
+        unwrap(debugApi.breakpointHitStats()),
+        unwrap(debugApi.threads()),
+      ])
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      const lines = []
+      lines.push('# JDWP Debug Session Report')
+      lines.push('')
+      lines.push(`- Generated: ${new Date().toLocaleString()}`)
+      const st = statusR.data || {}
+      lines.push(`- Target: ${st.targetHost || '?'}:${st.targetPort ?? '?'}`)
+      lines.push(`- JVM: ${(st.vmDescription || 'unknown').split('\n')[0]}`)
+      lines.push('')
+
+      lines.push('## Breakpoints')
+      const bps = (bpR.data && bpR.data.breakpoints) || []
+      if (bps.length === 0) lines.push('_none set_')
+      else for (const b of bps) lines.push(`- \`${b.location || b.id}\``)
+      lines.push('')
+
+      const hits = (hitsR.ok && hitsR.data.hits) || {}
+      lines.push('## Breakpoint hits (this session)')
+      const hitKeys = Object.keys(hits)
+      if (hitKeys.length === 0) lines.push('_no hits recorded_')
+      else for (const k of hitKeys) lines.push(`- \`${k}\`: **${hits[k]}**`)
+      lines.push('')
+
+      lines.push('## Threads')
+      const ths = (threadsR.ok && threadsR.data.threads) || []
+      const suspended = ths.filter((t) => t.suspended)
+      lines.push(`- Total: ${ths.length}, suspended: ${suspended.length}`)
+      for (const t of suspended) lines.push(`- ⏸ **${t.name}** (${t.status || ''})`)
+      lines.push('')
+
+      if (varsEnhanced) {
+        lines.push('## Variable snapshot (selected thread)')
+        lines.push('```json')
+        lines.push(JSON.stringify(varsEnhanced, null, 2).slice(0, 20000))
+        lines.push('```')
+        lines.push('')
+      }
+
+      lines.push('## Activity log')
+      lines.push('```')
+      for (const l of activityLines.slice(-40)) lines.push(typeof l === 'string' ? l : JSON.stringify(l))
+      lines.push('```')
+
+      const md = lines.join('\n')
+      const blob = new Blob([md], { type: 'text/markdown' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `jdwp-session-report-${ts}.md`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      showToast('Session report downloaded')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const toggleMute = async () => {
@@ -2487,12 +2590,24 @@ export default function App() {
                             <span style={{ color: p.running ? 'var(--ok, #3fb950)' : 'var(--text-muted)' }}>●</span>
                             <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</span>
                             <span style={{ color: 'var(--text-muted)' }}>{p.phase}</span>
+                            <button type="button" className="btn btn-ghost" style={{ fontSize: 9, padding: '2px 6px' }} onClick={() => fetchPodLogs(p.name)}>
+                              logs
+                            </button>
                             <button type="button" className="btn" style={{ fontSize: 9, padding: '2px 8px' }} disabled={!p.running || busy} onClick={() => debugServicePod(p.name)}>
                               Debug
                             </button>
                           </div>
                         ))}
                       </div>
+                    )}
+                    {podLogsLoading && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>fetching logs…</div>}
+                    {podLogs && !podLogsLoading && (
+                      <pre
+                        className="mono-block"
+                        style={{ maxHeight: 180, overflowY: 'auto', marginTop: 6, fontSize: 9, whiteSpace: 'pre-wrap' }}
+                      >
+                        {`--- kubectl logs ${podLogs.pod} (last 100) ---\n${podLogs.text}`}
+                      </pre>
                     )}
                   </div>
                 )}
@@ -2602,6 +2717,9 @@ export default function App() {
               <div className="toolbar">
                 <button type="button" className="btn" disabled={!connected || busy} onClick={loadThreadDump}>
                   Full thread dump
+                </button>
+                <button type="button" className="btn btn-ghost" disabled={!connected || busy} onClick={exportSessionReport} title="Download breakpoints, hits, threads, variables and activity as Markdown">
+                  Export report
                 </button>
                 <button type="button" className="btn" disabled={!selectedThread || dbgToolbarBusy} onClick={refreshWatches}>
                   Refresh watches
@@ -2752,6 +2870,8 @@ export default function App() {
                   setBpLine={setBpLine}
                   bpTriggerUrl={bpTriggerUrl}
                   setBpTriggerUrl={setBpTriggerUrl}
+                  bpRequestId={bpRequestId}
+                  setBpRequestId={setBpRequestId}
                   addBreakpoint={addBreakpoint}
                   clearBps={clearBps}
                   toggleMute={toggleMute}

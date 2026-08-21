@@ -13,6 +13,8 @@ export default function BreakpointDrawer({
   setBpLine,
   bpTriggerUrl,
   setBpTriggerUrl,
+  bpRequestId,
+  setBpRequestId,
   addBreakpoint,
   clearBps,
   toggleMute,
@@ -96,9 +98,17 @@ export default function BreakpointDrawer({
                   placeholder="optional GET URL to load class"
                 />
               </div>
+              <div className="input-row">
+                <label>Request ID (conditional)</label>
+                <input
+                  value={bpRequestId}
+                  onChange={(e) => setBpRequestId(e.target.value)}
+                  placeholder="optional — only suspend requests with this X-Debug-Request-Id"
+                />
+              </div>
               <div className="toolbar">
                 <button type="button" className="btn btn-primary" disabled={!connected || busy} onClick={addBreakpoint}>
-                  Add line breakpoint
+                  {bpRequestId.trim() ? 'Add conditional breakpoint' : 'Add line breakpoint'}
                 </button>
                 <button type="button" className="btn" disabled={!connected || busy} onClick={clearBps}>
                   Remove all
