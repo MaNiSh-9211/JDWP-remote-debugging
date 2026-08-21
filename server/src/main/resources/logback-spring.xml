@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Demo-target logging.
+  Streams application logs to the JDWP debug client's log receiver so live
+  capture works even when this app runs inside a container (no javaagent
+  injection possible). Point LOG_TARGET_HOST/PORT at wherever the client
+  listens; the appender reconnects silently until the receiver is up.
+-->
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{24} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <springProperty scope="context" name="logHost" source="log.target.host" defaultValue="host.docker.internal"/>
+    <springProperty scope="context" name="logPort" source="log.target.port" defaultValue="9999"/>
+
+    <appender name="CLIENT_SOCKET" class="com.jdwp.server.log.ClientSocketAppender">
+        <host>${logHost}</host>
+        <port>${logPort}</port>
+        <reconnectDelayMs>5000</reconnectDelayMs>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="CLIENT_SOCKET"/>
+    </root>
+</configuration>

@@ -60,15 +60,7 @@ public class ApiTokenAuthFilter implements Filter {
             return;
         }
 
-        String provided = req.getHeader("X-Debug-Token");
-        if (provided == null || provided.isEmpty()) {
-            String authorization = req.getHeader("Authorization");
-            if (authorization != null && authorization.startsWith("Bearer ")) {
-                provided = authorization.substring("Bearer ".length()).trim();
-            }
-        }
-
-        if (provided != null && constantTimeEquals(provided.getBytes(StandardCharsets.UTF_8), expectedToken)) {
+        if (requestAuthorized(req)) {
             chain.doFilter(request, response);
             return;
         }
@@ -76,6 +68,21 @@ public class ApiTokenAuthFilter implements Filter {
         res.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         res.setContentType("application/json");
         res.getWriter().write("{\"success\":false,\"message\":\"Unauthorized: missing or invalid X-Debug-Token\"}");
+    }
+
+    /** Extracts the presented token and compares it in constant time. Always true when auth is disabled. */
+    public boolean requestAuthorized(HttpServletRequest req) {
+        if (!isEnabled()) {
+            return true;
+        }
+        String provided = req.getHeader("X-Debug-Token");
+        if (provided == null || provided.isEmpty()) {
+            String authorization = req.getHeader("Authorization");
+            if (authorization != null && authorization.startsWith("Bearer ")) {
+                provided = authorization.substring("Bearer ".length()).trim();
+            }
+        }
+        return provided != null && constantTimeEquals(provided.getBytes(StandardCharsets.UTF_8), expectedToken);
     }
 
     /** Constant-time comparison to avoid timing attacks. */

@@ -39,6 +39,9 @@ public class DebugController {
     @Autowired
     private DemoAppProxyService demoAppProxyService;
 
+    @Autowired
+    private com.jdwp.client.security.TargetAllowList targetAllowList;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     
     @PostMapping("/connect")
@@ -46,6 +49,13 @@ public class DebugController {
             @RequestParam(defaultValue = "localhost") String host,
             @RequestParam(defaultValue = "5005") int port) {
         try {
+            // Production guard: restrict which JVMs this client may attach to.
+            if (!targetAllowList.allows(host)) {
+                Map<String, Object> denied = new HashMap<>();
+                denied.put("success", false);
+                denied.put("message", "Target '" + host + "' is not on the allowed list (jdwp.allowed-targets)");
+                return ResponseEntity.status(403).body(denied);
+            }
             boolean connected = jdwpService.connect(host, port);
             Map<String, Object> response = new HashMap<>();
             response.put("success", connected);

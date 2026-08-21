@@ -62,6 +62,41 @@
                     <mainClass>com.jdwp.client.JdwpDebugClientApplication</mainClass>
                 </configuration>
             </plugin>
+            <!--
+              Builds target/console-log-agent.jar on every package: the standalone
+              javaagent injected into target JVMs for live log capture. Contains only
+              com.jdwp.client.agent.** (pure JDK + provided logback), so it can be
+              loaded by any JVM without dragging in Spring Boot.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.6.0</version>
+                <configuration>
+                    <descriptors>
+                        <descriptor>src/main/assembly/agent.xml</descriptor>
+                    </descriptors>
+                    <archive>
+                        <manifestEntries>
+                            <Premain-Class>com.jdwp.client.agent.ConsoleLogAgent</Premain-Class>
+                            <Agent-Class>com.jdwp.client.agent.ConsoleLogAgent</Agent-Class>
+                            <Can-Redefine-Classes>false</Can-Redefine-Classes>
+                            <Can-Retransform-Classes>false</Can-Retransform-Classes>
+                        </manifestEntries>
+                    </archive>
+                    <finalName>console-log-agent</finalName>
+                    <appendAssemblyId>false</appendAssemblyId>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>build-log-agent</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>

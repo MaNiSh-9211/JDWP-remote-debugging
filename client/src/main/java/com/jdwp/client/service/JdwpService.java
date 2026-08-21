@@ -2967,68 +2967,47 @@ public class JdwpService {
      * Find the path to the console log agent JAR
      */
     private String findAgentJarPath() {
-        // Get the JAR's directory (where the client JAR is running from)
-        String jarPath = getJarDirectory();
-        String userDir = System.getProperty("user.dir");
-        
-        logger.info("[JDWP CLIENT] Searching for agent JAR...");
-        logger.info("[JDWP CLIENT] JAR directory: {}", jarPath);
-        logger.info("[JDWP CLIENT] User directory: {}", userDir);
-        
-        // Try to find the agent JAR in multiple locations
-        java.util.List<String> possiblePaths = new java.util.ArrayList<>();
-        possiblePaths.add("console-log-agent.jar");
-        possiblePaths.add("target/console-log-agent.jar");
-        possiblePaths.add("../console-log-agent.jar");
-        possiblePaths.add("../client/console-log-agent.jar");
-        possiblePaths.add("../client/target/console-log-agent.jar");
-        if (userDir != null) {
-            possiblePaths.add(userDir + "/console-log-agent.jar");
-            possiblePaths.add(userDir + "/target/console-log-agent.jar");
-            possiblePaths.add(userDir + "/client/console-log-agent.jar");
-            possiblePaths.add(userDir + "/client/target/console-log-agent.jar");
-        }
-        
-        // If we know the JAR directory, add those paths too
-        if (jarPath != null && !jarPath.isEmpty()) {
-            possiblePaths.add(jarPath + "/console-log-agent.jar");
-            possiblePaths.add(jarPath + "/target/console-log-agent.jar");
-            java.io.File jarDirFile = new java.io.File(jarPath);
-            if (jarDirFile.getParent() != null) {
-                possiblePaths.add(jarDirFile.getParent() + "/console-log-agent.jar");
-                possiblePaths.add(jarDirFile.getParent() + "/client/console-log-agent.jar");
+        // console-log-agent.jar (built by the Maven assembly in every package) is the
+        // standalone javaagent for live log capture. It lives next to the client JAR
+        // or in target/ — a handful of deterministic locations, no filesystem crawl.
+        java.util.List<String> candidates = new java.util.ArrayList<>();
+        try {
+            java.net.URL url = getClass().getProtectionDomain().getCodeSource().getLocation();
+            String p = url.getPath();
+            if (p.startsWith("file:")) p = p.substring(5);
+            if (p.startsWith("/") && p.length() > 2 && p.charAt(2) == ':') p = p.substring(1);
+            java.io.File self = new java.io.File(java.net.URLDecoder.decode(p, "UTF-8"));
+            java.io.File dir = self.isFile() ? self.getParentFile() : self;
+            if (dir != null) {
+                candidates.add(new java.io.File(dir, "console-log-agent.jar").getPath());
+                java.io.File parent = dir.getParentFile();
+                if (parent != null) {
+                    candidates.add(new java.io.File(parent, "target/console-log-agent.jar").getPath());
+                }
             }
+        } catch (Exception e) {
+            logger.debug("[JDWP CLIENT] Could not resolve own location: {}", e.getMessage());
         }
-        
-        // Also try absolute paths based on common workspace structure
+        String userDir = System.getProperty("user.dir");
         if (userDir != null) {
-            possiblePaths.add(userDir.replace("\\", "/") + "/console-log-agent.jar");
-            possiblePaths.add(userDir.replace("\\", "/") + "/client/console-log-agent.jar");
+            candidates.add(userDir + "/target/console-log-agent.jar");
+            candidates.add(userDir + "/client/target/console-log-agent.jar");
         }
-        
-        for (String path : possiblePaths) {
-            if (path == null) continue;
+
+        for (String path : candidates) {
             try {
-                java.io.File file = new java.io.File(path);
-                logger.debug("[JDWP CLIENT] Checking: {} -> exists: {}", path, file.exists());
-                if (file.exists() && file.isFile()) {
-                    logger.info("[JDWP CLIENT] ✓ Found agent JAR at: {}", file.getAbsolutePath());
-                    return file.getAbsolutePath();
+                java.io.File f = new java.io.File(path);
+                logger.debug("[JDWP CLIENT] Checking: {} -> exists: {}", path, f.exists());
+                if (f.isFile()) {
+                    logger.info("[JDWP CLIENT] ✓ Found log agent JAR: {}", f.getAbsolutePath());
+                    return f.getAbsolutePath();
                 }
             } catch (Exception e) {
-                logger.debug("[JDWP CLIENT] Error checking path {}: {}", path, e.getMessage());
+                logger.debug("[JDWP CLIENT] Error checking {}: {}", path, e.getMessage());
             }
         }
-        
-        logger.error("[JDWP CLIENT] ❌ Agent JAR not found in any of {} checked locations", possiblePaths.size());
-        if (!possiblePaths.isEmpty()) {
-            StringBuilder pathList = new StringBuilder();
-            for (int i = 0; i < Math.min(5, possiblePaths.size()); i++) {
-                if (i > 0) pathList.append(", ");
-                pathList.append(possiblePaths.get(i));
-            }
-            logger.error("[JDWP CLIENT] Searched paths included: {}", pathList.toString());
-        }
+
+        logger.error("[JDWP CLIENT] ❌ console-log-agent.jar not found — run 'mvn package' to produce it; live log capture disabled for this session.");
         return null;
     }
     

@@ -1,5 +1,0 @@
-Manifest-Version: 1.0
-Premain-Class: com.jdwp.client.agent.ConsoleLogAgent
-Agent-Class: com.jdwp.client.agent.ConsoleLogAgent
-Can-Redefine-Classes: false
-Can-Retransform-Classes: false
