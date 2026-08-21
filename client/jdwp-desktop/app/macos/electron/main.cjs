@@ -5,6 +5,7 @@ const path = require('path')
 const { validateApiBase, setupContentSecurityPolicy, attachNavigationGuards } = require('./electron-security.cjs')
 const { registerClusterExecIpc } = require('./cluster-exec.cjs')
 const { registerKindPortForwardIpc, killPfOnAppQuit } = require('./kind-port-forward.cjs')
+const { registerPodJdwpForwardIpc, killAllForwards } = require('./pod-jdwp-forward.cjs')
 
 function looksLikeJdwpMonorepoRoot(dir) {
   try {
@@ -96,7 +97,9 @@ function createWindow() {
 
 registerClusterExecIpc(ipcMain)
 registerKindPortForwardIpc(ipcMain)
+registerPodJdwpForwardIpc(ipcMain)
 killPfOnAppQuit(app)
+app.on('before-quit', () => killAllForwards())
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null)

@@ -821,6 +821,133 @@ export default function App() {
     }
   }, [showToast])
 
+  // ---- Generic pod attach: discover pods, forward JDWP from ANY of them ----
+
+  const [podList, setPodList] = useState([])
+  const [podDiscoveryError, setPodDiscoveryError] = useState(null)
+  const [selectedPod, setSelectedPod] = useState('')
+  const [podJdwpPort, setPodJdwpPort] = useState('5005')
+
+  const discoverPods = useCallback(async () => {
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.clusterExec) {
+      showToast('Pod discovery needs JDWP Studio (Electron)', true)
+      return
+    }
+    const ns = (k8sNamespace || 'default').trim()
+    const res = await electron.clusterExec({
+      context: k8sContext,
+      namespace: ns,
+      kubeconfig: k8sKubeconfig,
+      commandLine: `get pods -o custom-columns=NAME:.metadata.name,PHASE:.status.phase,RUNNING:.status.containerStatuses[0].state.running --no-headers`,
+    })
+    if (!res?.ok) {
+      setPodList([])
+      setPodDiscoveryError(res?.error || 'kubectl failed')
+      return
+    }
+    const rows = String(res.stdout || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const parts = l.split(/\s+/)
+        return { name: parts[0], phase: parts[1] || '?', running: parts[2] === 'true' }
+      })
+    setPodList(rows)
+    setPodDiscoveryError(rows.length === 0 ? `No pods in namespace "${ns}"` : null)
+    if (rows.length > 0 && !rows.some((p) => p.name === selectedPod)) {
+      // Preselect the first running pod, else the first pod.
+      const firstRunning = rows.find((p) => p.running) || rows[0]
+      setSelectedPod(firstRunning.name)
+    }
+  }, [k8sNamespace, k8sContext, k8sKubeconfig, selectedPod, showToast])
+
+  useEffect(() => {
+    if (activeNav === 'cluster') discoverPods()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeNav])
+
+  const debugSelectedPod = useCallback(async () => {
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.podJdwpForward) {
+      showToast('Generic pod attach needs JDWP Studio (Electron)', true)
+      return
+    }
+    const pod = (selectedPod || '').trim()
+    if (!pod) {
+      showToast('Select a pod first', true)
+      return
+    }
+    const remotePort = Number(podJdwpPort) || 5005
+    setBusy(true)
+    try {
+      if (connected) {
+        await unwrap(debugApi.disconnect())
+        setConnected(false)
+        setThreads([])
+        setSelectedThread(null)
+        setFrames([])
+        setVarsEnhanced(null)
+        await refreshStatus()
+      }
+      const fr = await electron.podJdwpForward({
+        namespace: (k8sNamespace || 'default').trim(),
+        pod,
+        remotePort,
+        localPort: 5005,
+        kubeContext: (k8sContext || '').trim() || undefined,
+        kubeconfig: (k8sKubeconfig || '').trim() || undefined,
+      })
+      if (!fr?.ok) {
+        showToast(fr?.message || 'Port-forward failed', true)
+        return
+      }
+      setPort('5005')
+      setJdwpAttachProfile('custom')
+      const jdwpHost = (host || '').trim() || 'localhost'
+      await new Promise((r) => setTimeout(r, 800))
+      setJdwpConnecting(true)
+      const conn = await unwrap(debugApi.connect(jdwpHost, 5005))
+      setJdwpConnecting(false)
+      if (conn.ok && conn.data.success !== false) {
+        setConnected(true)
+        setClientApiReachable(true)
+        showToast(`Attached to ${pod} — JDWP localhost:5005 ← ${fr.namespace}/${pod}:${remotePort}`)
+        pushActivity(`Pod ${fr.namespace}/${pod}:${remotePort} → localhost:5005`)
+        await refreshLogsSimple()
+        await refreshThreads()
+        await refreshBreakpoints()
+        await refreshStatus()
+      } else {
+        showToast(conn.error || conn.data?.message || 'JDWP attach failed', true)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [
+    selectedPod, podJdwpPort, connected, host, k8sNamespace, k8sContext, k8sKubeconfig,
+    refreshStatus, refreshThreads, refreshBreakpoints, refreshLogsSimple, showToast, pushActivity,
+  ])
+
+  // Live status for generic forwards.
+  const [podForwards, setPodForwards] = useState([])
+  useEffect(() => {
+    if (activeNav !== 'cluster') return
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.podJdwpForwardStatus) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const s = await electron.podJdwpForwardStatus()
+        if (!cancelled) setPodForwards(s?.forwards || [])
+      } catch { /* ignore */ }
+    }
+    tick()
+    const iv = setInterval(tick, 3000)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [activeNav])
+
   const seedBreakpointsFromApi = async () => {
     if (!connected) {
       showToast('Connect JDWP to the target VM first', true)
@@ -2208,6 +2335,72 @@ export default function App() {
                 kubeconfig={k8sKubeconfig}
                 showToast={showToast}
               />
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: 11, marginBottom: 6 }}>
+                  Attach to any pod — discover pods in the namespace above, forward its JDWP port to localhost:5005 and attach.
+                </label>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button type="button" className="btn btn-ghost" style={{ fontSize: 10 }} onClick={discoverPods}>
+                    Discover pods
+                  </button>
+                  {podList.length > 0 && (
+                    <select
+                      value={selectedPod}
+                      onChange={(e) => setSelectedPod(e.target.value)}
+                      style={{
+                        flex: 1,
+                        minWidth: 200,
+                        padding: 6,
+                        borderRadius: 8,
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg-deep)',
+                        color: 'var(--text)',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 11,
+                      }}
+                    >
+                      {podList.map((p) => (
+                        <option key={p.name} value={p.name}>
+                          {p.name} — {p.phase}
+                          {p.running ? '' : ' (not running)'}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <input
+                    value={podJdwpPort}
+                    onChange={(e) => setPodJdwpPort(e.target.value)}
+                    title="JDWP port inside the pod"
+                    style={{ width: 70, padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: 11 }}
+                  />
+                  <button type="button" className="btn" disabled={busy || !selectedPod} onClick={debugSelectedPod}>
+                    Debug this pod
+                  </button>
+                </div>
+                {podDiscoveryError && (
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>{podDiscoveryError}</div>
+                )}
+                {podForwards.length > 0 && (
+                  <div style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--ok, #3fb950)', marginTop: 6 }}>
+                    {podForwards.map((f) => (
+                      <div key={f.localPort}>
+                        ● localhost:{f.localPort} ← {f.namespace}/{f.pod}:{f.remotePort}{' '}
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          style={{ fontSize: 9, padding: '0 6px' }}
+                          onClick={async () => {
+                            await window.jdwpElectron?.podJdwpForwardStop({ localPort: f.localPort })
+                            showToast(`Forward to ${f.pod} stopped`)
+                          }}
+                        >
+                          stop
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div className="input-row" style={{ marginTop: 12 }}>
                 <label>Notes (service names, agent flags, team links)</label>
                 <textarea

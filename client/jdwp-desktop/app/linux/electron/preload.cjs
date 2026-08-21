@@ -32,4 +32,7 @@ contextBridge.exposeInMainWorld('jdwpElectron', {
   kindJdwpForward: (opts) => ipcRenderer.invoke('kind-jdwp-forward', opts),
   kindJdwpForwardStop: () => ipcRenderer.invoke('kind-jdwp-forward-stop'),
   kindJdwpForwardStatus: () => ipcRenderer.invoke('kind-jdwp-forward-status'),
+  podJdwpForward: (opts) => ipcRenderer.invoke('pod-jdwp-forward', opts),
+  podJdwpForwardStop: (opts) => ipcRenderer.invoke('pod-jdwp-forward-stop', opts),
+  podJdwpForwardStatus: () => ipcRenderer.invoke('pod-jdwp-forward-status'),
 })
