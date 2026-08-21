@@ -839,7 +839,7 @@ export default function App() {
       context: k8sContext,
       namespace: ns,
       kubeconfig: k8sKubeconfig,
-      commandLine: `get pods -o custom-columns=NAME:.metadata.name,PHASE:.status.phase,RUNNING:.status.containerStatuses[0].state.running --no-headers`,
+      commandLine: `get pods -o custom-columns=NAME:.metadata.name,PHASE:.status.phase --no-headers`,
     })
     if (!res?.ok) {
       setPodList([])
@@ -852,7 +852,7 @@ export default function App() {
       .filter(Boolean)
       .map((l) => {
         const parts = l.split(/\s+/)
-        return { name: parts[0], phase: parts[1] || '?', running: parts[2] === 'true' }
+        return { name: parts[0], phase: parts[1] || '?', running: parts[1] === 'Running' }
       })
     setPodList(rows)
     setPodDiscoveryError(rows.length === 0 ? `No pods in namespace "${ns}"` : null)

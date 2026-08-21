@@ -3,6 +3,7 @@
 **Attach a full debugger to Java JVMs running in Docker & Kubernetes — without stopping them, without redeploying, and without blocking other requests.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/MaNiSh-9211/JDWP-remote-debugging/actions/workflows/ci.yml/badge.svg)](https://github.com/MaNiSh-9211/JDWP-remote-debugging/actions/workflows/ci.yml)
 [![Java](https://img.shields.io/badge/Java-21+-orange.svg)](https://openjdk.org)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.x-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![Electron](https://img.shields.io/badge/Desktop-Electron-47848F.svg)](https://www.electronjs.org)
@@ -79,6 +80,26 @@ Most debuggers force an ugly trade-off in production: either you don't debug at 
 ├── k8s/kind-jdwp-demo/         # One-command Kind demo cluster
 └── docs/                       # Architecture, security model, production guide
 ```
+
+## Prove it yourself (live cluster, one command)
+
+Skeptical that cluster attach actually works? Run this — it creates a real kind cluster, deploys debuggable Java pods, attaches through `kubectl port-forward`, and asserts every claim above:
+
+```powershell
+# Windows (needs Docker + kubectl + JDK 21; kind is downloaded automatically)
+powershell -ExecutionPolicy Bypass -File scripts/e2e-live-debug.ps1
+```
+
+Expected output ends with `ALL CHECKS PASSED`, having verified:
+
+1. Pods reach `Running` in a **real Kubernetes cluster**
+2. Debugger attaches to the pod's JVM through the port-forward tunnel
+3. Untagged HTTP requests complete normally (**never blocked**)
+4. A request carrying `X-Debug-Request-Id` is **suspended inside the pod** while untagged traffic keeps flowing
+5. Variables are readable from the suspended pod thread
+6. Resume completes the request
+
+The Studio UI exposes exactly these primitives: context discovery (`kubectl config get-contexts`), pod discovery (`kubectl get pods`), per-pod JDWP forward with live status, and a read-only kubectl shell.
 
 ## Quick start (Docker, 3 minutes)
 
