@@ -1,0 +1,53 @@
+# Default: only the demo app under debug (debug-server) starts.
+# Run the JDWP *client* on your PC (Maven/JAR or client/START-JDWP-CLIENT.ps1)
+# so JDWP Studio hits http://localhost:8083 and Kind port-forward
+# localhost:5005 matches the same machine.
+#
+# Optional containerized client:
+#   docker compose --profile container-client up -d --build
+#   (set JDWP_API_TOKEN below when you do - the API is then reachable beyond localhost)
+services:
+  debug-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: jdwp-debug-server
+    ports:
+      # DEV ONLY: publishing the JDWP port to the host is convenient locally.
+      # In production, NEVER expose 5005 - use `kubectl port-forward` instead.
+      - "5005:5005"
+      - "8081:8081"
+    volumes:
+      - ./server/data:/app/data
+    environment:
+      DEMO_DATA_DIR: /app/data
+    networks:
+      - jdwp-network
+    restart: unless-stopped
+
+  jdwp-client:
+    profiles:
+      - container-client
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: jdwp-debug-client
+    ports:
+      - "8083:8083"
+    depends_on:
+      - debug-server
+    environment:
+      SERVER_PORT: "8083"
+      JDWP_SERVER_ADDRESS: 0.0.0.0
+      JDWP_DEFAULT_TARGET_HOST: debug-server
+      JDWP_DEFAULT_TARGET_PORT: "5005"
+      JDWP_DEMO_APP_BASE_URL: http://debug-server:8081
+      # REQUIRED when bound beyond localhost:
+      JDWP_API_TOKEN: ${JDWP_API_TOKEN:-}
+    networks:
+      - jdwp-network
+    restart: unless-stopped
+
+networks:
+  jdwp-network:
+    driver: bridge

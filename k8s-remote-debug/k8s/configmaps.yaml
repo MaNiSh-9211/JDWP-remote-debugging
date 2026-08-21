@@ -1,0 +1,53 @@
+---
+# ConfigMap for debug settings
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: debug-config
+  namespace: debug-services
+  labels:
+    app: debug-services
+data:
+  # JDWP configuration
+  JDWP_SUSPEND: "n"
+  JDWP_SERVER: "y"
+  JDWP_TRANSPORT: "dt_socket"
+  
+  # Debug filter settings
+  DEBUG_FILTER_ENABLED: "true"
+  DEBUG_FILTER_LOG_ALL_REQUESTS: "false"
+  DEBUG_FILTER_MAX_SESSIONS: "10"
+  DEBUG_FILTER_SESSION_TIMEOUT_MS: "300000"
+  
+  # Spring settings
+  SPRING_PROFILES_ACTIVE: "debug"
+  
+---
+# ConfigMap for Valuation Service
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valuation-config
+  namespace: debug-services
+  labels:
+    app: valuation-service
+data:
+  SERVER_PORT: "8807"
+  JDWP_PORT: "5005"
+  # Add application-specific config here
+  SPRING_APPLICATION_NAME: "valuation-service"
+  
+---
+# ConfigMap for VCP Service
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vcp-config
+  namespace: debug-services
+  labels:
+    app: vcp-service
+data:
+  SERVER_PORT: "8081"
+  JDWP_PORT: "5006"
+  # Add application-specific config here
+  SPRING_APPLICATION_NAME: "vcp-service"

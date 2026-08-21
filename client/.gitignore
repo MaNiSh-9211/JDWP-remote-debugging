@@ -1,0 +1,8 @@
+# Covered by root .gitignore; explicit for standalone tooling / clarity
+**/node_modules/
+node_modules/
+ui/dist/
+ui/.vite/
+*.log
+.env
+.env.*

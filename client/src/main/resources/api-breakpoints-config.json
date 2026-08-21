@@ -1,0 +1,104 @@
+{
+  "apiEndpoints": {
+    "GET /api/users": {
+      "description": "Get all users",
+      "breakpoints": [
+        {
+          "className": "com.jdwp.server.controller.UserController",
+          "lineNumber": 31,
+          "description": "Entry point in UserController.getAllUsers()"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 64,
+          "description": "Service method getAllUsers() - loading users"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 81,
+          "description": "Service method getAllUsers() - returning users"
+        }
+      ]
+    },
+    "GET /api/users/{id}": {
+      "description": "Get user by ID",
+      "breakpoints": [
+        {
+          "className": "com.jdwp.server.controller.UserController",
+          "lineNumber": 50,
+          "description": "Entry point in UserController.getUserById()"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 81,
+          "description": "Service method getUserById() - finding user"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 95,
+          "description": "Service method getUserById() - returning user"
+        }
+      ]
+    },
+    "POST /api/users": {
+      "description": "Create new user",
+      "breakpoints": [
+        {
+          "className": "com.jdwp.server.controller.UserController",
+          "lineNumber": 77,
+          "description": "Entry point in UserController.createUser()"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 105,
+          "description": "Service method createUser() - validating user"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 135,
+          "description": "Service method createUser() - saving user"
+        }
+      ]
+    },
+    "PUT /api/users/{id}": {
+      "description": "Update user",
+      "breakpoints": [
+        {
+          "className": "com.jdwp.server.controller.UserController",
+          "lineNumber": 101,
+          "description": "Entry point in UserController.updateUser()"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 135,
+          "description": "Service method updateUser() - finding existing user"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 165,
+          "description": "Service method updateUser() - updating user"
+        }
+      ]
+    },
+    "DELETE /api/users/{id}": {
+      "description": "Delete user",
+      "breakpoints": [
+        {
+          "className": "com.jdwp.server.controller.UserController",
+          "lineNumber": 124,
+          "description": "Entry point in UserController.deleteUser()"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 174,
+          "description": "Service method deleteUser() - finding user to delete"
+        },
+        {
+          "className": "com.jdwp.server.service.UserService",
+          "lineNumber": 190,
+          "description": "Service method deleteUser() - removing user"
+        }
+      ]
+    }
+  }
+}

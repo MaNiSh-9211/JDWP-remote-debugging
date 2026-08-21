@@ -1,0 +1,89 @@
+---
+# ServiceAccount for debug operations
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: debug-service-account
+  namespace: debug-services
+  labels:
+    app: debug-services
+
+---
+# Least-privilege Role for debug operations within the namespace.
+#
+# Design rules (production safety):
+#   - NO pods/exec  : the debugger attaches via JDWP port-forward, never shell exec
+#   - NO write verbs: the debugger observes, it never mutates workloads
+#   - portforward is the ONLY elevated verb, and only on pods
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: debug-role
+  namespace: debug-services
+  labels:
+    app: debug-services
+rules:
+  # Discover debuggable pods
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Tunnel JDWP traffic out of the cluster (read-only attach)
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+  # Read application logs for correlation with debug sessions
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Resolve services to target pods
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+
+---
+# RoleBinding for the debug service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: debug-role-binding
+  namespace: debug-services
+  labels:
+    app: debug-services
+subjects:
+  - kind: ServiceAccount
+    name: debug-service-account
+    namespace: debug-services
+roleRef:
+  kind: Role
+  name: debug-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Optional ClusterRole: namespace discovery only.
+# Delete this and the binding below if you scope debugging to a single namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: debug-namespace-reader
+  labels:
+    app: debug-services
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: debug-namespace-reader-binding
+  labels:
+    app: debug-services
+subjects:
+  - kind: ServiceAccount
+    name: debug-service-account
+    namespace: debug-services
+roleRef:
+  kind: ClusterRole
+  name: debug-namespace-reader
+  apiGroup: rbac.authorization.k8s.io

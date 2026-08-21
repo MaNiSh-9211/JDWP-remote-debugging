@@ -1,0 +1,141 @@
+---
+# Deployment for Valuation Service with JDWP debugging
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valuation-service
+  namespace: debug-services
+  labels:
+    app: valuation-service
+    debug-enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valuation-service
+  template:
+    metadata:
+      labels:
+        app: valuation-service
+        debug-enabled: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8807"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      containers:
+        - name: valuation-service
+          image: valuation-debug:latest
+          imagePullPolicy: Never  # Use local image (Kind)
+          ports:
+            - name: http
+              containerPort: 8807
+              protocol: TCP
+            - name: jdwp
+              containerPort: 5005
+              protocol: TCP
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+            - name: SPRING_PROFILES_ACTIVE
+              valueFrom:
+                configMapKeyRef:
+                  name: debug-config
+                  key: SPRING_PROFILES_ACTIVE
+            - name: SERVER_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: valuation-config
+                  key: SERVER_PORT
+            - name: DEBUG_FILTER_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: debug-config
+                  key: DEBUG_FILTER_ENABLED
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8807
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8807
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Security context
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+      # Pod-level security context
+      securityContext:
+        fsGroup: 1000
+      # Restart policy
+      restartPolicy: Always
+      # Termination grace period (important for debugger cleanup)
+      terminationGracePeriodSeconds: 30
+      
+---
+# Service for Valuation Service - ClusterIP for internal access
+apiVersion: v1
+kind: Service
+metadata:
+  name: valuation-service
+  namespace: debug-services
+  labels:
+    app: valuation-service
+spec:
+  type: ClusterIP
+  selector:
+    app: valuation-service
+  ports:
+    - name: http
+      port: 8807
+      targetPort: 8807
+      protocol: TCP
+    - name: jdwp
+      port: 5005
+      targetPort: 5005
+      protocol: TCP
+
+---
+# NodePort Service for HTTP only (for local API testing)
+# JDWP is NOT exposed via NodePort - use kubectl port-forward instead!
+# This matches PRODUCTION setup exactly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: valuation-service-nodeport
+  namespace: debug-services
+  labels:
+    app: valuation-service
+  annotations:
+    description: "HTTP only - JDWP requires kubectl port-forward (security best practice)"
+spec:
+  type: NodePort
+  selector:
+    app: valuation-service
+  ports:
+    - name: http
+      port: 8807
+      targetPort: 8807
+      nodePort: 30807
+      protocol: TCP
+    # NO JDWP NodePort! Use: kubectl port-forward pod/<pod-name> 5005:5005

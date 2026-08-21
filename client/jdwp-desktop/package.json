@@ -1,0 +1,11 @@
+{
+  "name": "jdwp-desktop-root",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Run OS-specific app from app/windows, app/macos, or app/linux",
+  "scripts": {
+    "windows": "npm --prefix app/windows install && npm --prefix app/windows run electron:dev",
+    "macos": "npm --prefix app/macos install && npm --prefix app/macos run electron:dev",
+    "linux": "npm --prefix app/linux install && npm --prefix app/linux run electron:dev"
+  }
+}

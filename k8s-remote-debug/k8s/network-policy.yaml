@@ -1,0 +1,66 @@
+---
+# Network Policy for debug services
+# Restricts network access for security
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: debug-services-network-policy
+  namespace: debug-services
+  labels:
+    app: debug-services
+spec:
+  podSelector:
+    matchLabels:
+      debug-enabled: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow HTTP traffic from anywhere (for API access)
+    - ports:
+        - protocol: TCP
+          port: 8807  # Valuation HTTP
+        - protocol: TCP
+          port: 8081  # VCP HTTP
+    # Allow JDWP only from within cluster (kubectl port-forward)
+    - from:
+        - namespaceSelector: {}  # From any namespace in cluster
+      ports:
+        - protocol: TCP
+          port: 5005  # Valuation JDWP
+        - protocol: TCP
+          port: 5006  # VCP JDWP
+    # Allow inter-service communication
+    - from:
+        - podSelector:
+            matchLabels:
+              debug-enabled: "true"
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow outbound HTTP/HTTPS (for external API calls)
+    - ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+    # Allow outbound to common database ports
+    - ports:
+        - protocol: TCP
+          port: 3306  # MySQL
+        - protocol: TCP
+          port: 5432  # PostgreSQL
+        - protocol: TCP
+          port: 6379  # Redis
+    # Allow inter-service communication
+    - to:
+        - podSelector:
+            matchLabels:
+              debug-enabled: "true"

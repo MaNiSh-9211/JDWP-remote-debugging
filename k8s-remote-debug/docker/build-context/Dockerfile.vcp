@@ -1,0 +1,16 @@
+# Dockerfile for VCP Service - MAVEN DEPENDENCY APPROACH
+# Debug filter included via pom.xml dependency (no agent needed)
+
+FROM eclipse-temurin:21-jre-alpine
+
+WORKDIR /app
+
+# Copy the application JAR (includes debug-filter-lib via Maven)
+COPY vcp-app.jar app.jar
+
+# Expose ports: HTTP and JDWP
+EXPOSE 8081 5005
+
+# Run the application
+# JDWP is configured via JAVA_TOOL_OPTIONS in Kubernetes deployment
+ENTRYPOINT ["java", "-jar", "app.jar"]

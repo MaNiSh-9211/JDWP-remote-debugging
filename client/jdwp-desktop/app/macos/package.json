@@ -1,0 +1,37 @@
+{
+  "name": "jdwp-studio-macos",
+  "version": "1.0.0",
+  "description": "JDWP Studio — macOS shell (Electron). UI: ../shared/renderer",
+  "private": true,
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5178 && electron .\"",
+    "electron:build": "vite build && electron-builder --mac --dir",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "3.13.9",
+    "axios": "1.15.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "4.7.0",
+    "concurrently": "9.2.1",
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8",
+    "vite": "5.4.21",
+    "wait-on": "8.0.5"
+  },
+  "build": {
+    "appId": "com.jdwp.studio.macos",
+    "productName": "JDWP Studio",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "electron/**/*"],
+    "mac": { "target": "dmg", "category": "public.app-category.developer-tools" }
+  }
+}

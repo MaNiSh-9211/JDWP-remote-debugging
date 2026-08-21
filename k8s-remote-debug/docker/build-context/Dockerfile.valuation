@@ -1,0 +1,20 @@
+# Simplified Dockerfile for Valuation Service
+FROM eclipse-temurin:21-jre-alpine
+
+WORKDIR /app
+
+# Copy the application JAR
+COPY valuation-app.jar app.jar
+
+# Copy the debug filter library
+COPY debug-filter-lib-1.0.0.jar /app/libs/
+
+# Environment variables for JDWP
+ENV JAVA_TOOL_OPTIONS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+ENV SERVER_PORT=8807
+
+# JDWP and HTTP ports
+EXPOSE 8807 5005
+
+# Run the application
+ENTRYPOINT ["java", "-Dloader.path=/app/libs/", "-jar", "app.jar"]

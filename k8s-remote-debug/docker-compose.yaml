@@ -1,0 +1,58 @@
+# Docker Compose alternative for K8s remote debugging
+# Use this when Kind cluster creation fails
+# The concepts are identical - just replace with K8s manifests when cluster is ready
+
+version: '3.8'
+
+services:
+  valuation-service:
+    build:
+      context: ./docker/build-context
+      dockerfile: Dockerfile.valuation
+    container_name: valuation-debug
+    ports:
+      - "8807:8807"  # HTTP
+      - "5005:5005"  # JDWP
+    environment:
+      - JAVA_TOOL_OPTIONS=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005
+      - SERVER_PORT=8807
+      - SPRING_PROFILES_ACTIVE=debug
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8807/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - debug-network
+    labels:
+      - "debug-enabled=true"
+      - "service=valuation-service"
+
+  vcp-service:
+    build:
+      context: ./docker/build-context
+      dockerfile: Dockerfile.vcp
+    container_name: vcp-debug
+    ports:
+      - "8081:8081"  # HTTP
+      - "5006:5006"  # JDWP
+    environment:
+      - JAVA_TOOL_OPTIONS=-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5006
+      - SERVER_PORT=8081
+      - SPRING_PROFILES_ACTIVE=debug
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - debug-network
+    labels:
+      - "debug-enabled=true"
+      - "service=vcp-service"
+
+networks:
+  debug-network:
+    driver: bridge

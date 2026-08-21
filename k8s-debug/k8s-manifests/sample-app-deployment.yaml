@@ -1,0 +1,80 @@
+# Example deployment for a debuggable Java microservice
+# Shows how to configure JDWP for production-safe debugging
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  namespace: default
+  labels:
+    app: sample-app
+spec:
+  replicas: 3  # Multiple replicas - debugger will pin to one
+  selector:
+    matchLabels:
+      app: sample-app
+  template:
+    metadata:
+      labels:
+        app: sample-app
+        debuggable: "true"  # Label to identify debuggable pods
+    spec:
+      containers:
+        - name: app
+          image: your-java-app:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            # JDWP port - NOT exposed via Service (internal only)
+            - name: jdwp
+              containerPort: 5005
+              protocol: TCP
+          env:
+            # Enable JDWP agent
+            - name: JAVA_TOOL_OPTIONS
+              value: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=0.0.0.0:5005"
+            # Or use JVM args directly:
+            # - name: JAVA_OPTS
+            #   value: "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=0.0.0.0:5005"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app
+  namespace: default
+  labels:
+    app: sample-app
+spec:
+  type: ClusterIP
+  ports:
+    # ONLY expose the application port
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+    # DO NOT expose JDWP port - it's only reachable via port-forward
+  selector:
+    app: sample-app

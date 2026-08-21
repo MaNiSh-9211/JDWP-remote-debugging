@@ -1,0 +1,23 @@
+# Create cluster with HTTP exposed on the host (no port-forward needed for app HTTP).
+# NodePort services in install.yaml use 30081 / 30082; kind maps them to localhost.
+#
+#   kind create cluster --name jdwp-demo --config k8s/kind-jdwp-demo/kind-cluster.yaml
+#
+# JDWP (5005) is NOT published here — use scripts/kind-jdwp-forward-jdwp.ps1 (or .sh) per pod.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: jdwp-demo
+nodes:
+  # Pin a stable image; kindest/node v1.35+ sometimes hits kubelet timeouts on Docker Desktop.
+  - role: control-plane
+    image: kindest/node:v1.30.8
+    # If 8081/8082 fail on Windows (bind permission / excluded range), use 9081/9082.
+    extraPortMappings:
+      - containerPort: 30081
+        hostPort: 9081
+        listenAddress: "0.0.0.0"
+        protocol: TCP
+      - containerPort: 30082
+        hostPort: 9082
+        listenAddress: "0.0.0.0"
+        protocol: TCP

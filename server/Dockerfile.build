@@ -1,0 +1,12 @@
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /app
+COPY pom.xml /app/
+COPY src /app/src/
+RUN mvn clean package -DskipTests
+
+FROM eclipse-temurin:21-jdk
+WORKDIR /app
+COPY --from=build /app/target/debug-server-1.0.0.jar /app/server-app.jar
+COPY data /app/data
+EXPOSE 8081 5005
+CMD ["java", "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005", "-jar", "server-app.jar"]

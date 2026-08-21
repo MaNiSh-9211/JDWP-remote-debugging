@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "jdwp": {
+      "command": "node",
+      "args": ["<absolute-path-to-repo>/jdwp-mcp/dist/index.js"],
+      "env": {
+        "JDWP_CLIENT_BASE_URL": "http://localhost:8083"
+      }
+    }
+  }
+}

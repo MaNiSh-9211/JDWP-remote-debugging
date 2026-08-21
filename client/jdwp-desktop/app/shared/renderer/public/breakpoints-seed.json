@@ -1,0 +1,23 @@
+[
+  {"className": "com.jdwp.server.debug.DebugRequestFilter", "lineNumber": 25, "note": "filter: X-Debug-Request-Id local (use header for per-request suspend)"},
+  {"className": "com.jdwp.server.demo.DemoLayeredController", "lineNumber": 25, "note": "GET /api/demo/ping"},
+  {"className": "com.jdwp.server.demo.DemoLayeredController", "lineNumber": 31, "note": "GET /api/demo/order/{id} entry"},
+  {"className": "com.jdwp.server.demo.DemoLayeredController", "lineNumber": 33, "note": "GET /api/demo/order/{id} after service"},
+  {"className": "com.jdwp.server.demo.DemoOrderService", "lineNumber": 20, "note": "service: before repository"},
+  {"className": "com.jdwp.server.demo.DemoOrderService", "lineNumber": 22, "note": "service: after find, before inventory"},
+  {"className": "com.jdwp.server.demo.DemoOrderRepository", "lineNumber": 49, "note": "repo: findById start"},
+  {"className": "com.jdwp.server.demo.DemoOrderRepository", "lineNumber": 54, "note": "repo: findById hit"},
+  {"className": "com.jdwp.server.demo.DemoInventoryService", "lineNumber": 20, "note": "inventory: reserve"},
+  {"className": "com.jdwp.server.demo.DemoInventoryService", "lineNumber": 24, "note": "inventory: stock check"},
+  {"className": "com.jdwp.server.demo.DemoLayeredController", "lineNumber": 39, "note": "POST /api/demo/workflow"},
+  {"className": "com.jdwp.server.demo.DemoWorkflowService", "lineNumber": 20, "note": "workflow: runCheckout"},
+  {"className": "com.jdwp.server.demo.DemoWorkflowService", "lineNumber": 30, "note": "workflow: persist step"},
+  {"className": "com.jdwp.server.demo.DemoLayeredController", "lineNumber": 49, "note": "POST /api/demo/async/run"},
+  {"className": "com.jdwp.server.demo.DemoAsyncService", "lineNumber": 11, "note": "async sync path (?sync=1)"},
+  {"className": "com.jdwp.server.demo.DemoAsyncService", "lineNumber": 18, "note": "async worker thread"},
+  {"className": "com.jdwp.server.controller.UserController", "lineNumber": 30, "note": "GET /api/users"},
+  {"className": "com.jdwp.server.controller.UserController", "lineNumber": 50, "note": "GET /api/users/{id}"},
+  {"className": "com.jdwp.server.controller.UserController", "lineNumber": 77, "note": "POST /api/users"},
+  {"className": "com.jdwp.server.controller.UserController", "lineNumber": 101, "note": "PUT /api/users/{id}"},
+  {"className": "com.jdwp.server.controller.UserController", "lineNumber": 124, "note": "DELETE /api/users/{id}"}
+]

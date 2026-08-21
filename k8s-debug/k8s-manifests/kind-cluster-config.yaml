@@ -1,0 +1,15 @@
+# KIND cluster configuration for K8s JDWP Debugger development
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: debug-cluster
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # Expose debugger API
+      - containerPort: 30090
+        hostPort: 8090
+        protocol: TCP
+      # Expose sample app
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP

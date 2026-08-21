@@ -1,0 +1,111 @@
+# Two independent demo apps in-cluster (like two containers). Same image, different labels.
+# Apply AFTER: kind create cluster --config k8s/kind-jdwp-demo/kind-cluster.yaml
+#              kind load docker-image jdwp-debug-server:local --name jdwp-demo
+#
+# HTTP on host (with kind-cluster.yaml): http://localhost:9081  (pod A)  http://localhost:9082  (pod B)
+# JDWP on host: run scripts/kind-jdwp-forward-jdwp.ps1 or .sh  → localhost:5005 (A) and localhost:5006 (B)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jdwp-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jdwp-demo-a
+  namespace: jdwp-demo
+  labels:
+    app: jdwp-demo-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jdwp-demo-a
+  template:
+    metadata:
+      labels:
+        app: jdwp-demo-a
+    spec:
+      containers:
+        - name: app
+          image: jdwp-debug-server:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+            - name: jdwp
+              containerPort: 5005
+          env:
+            - name: DEMO_DATA_DIR
+              value: /app/data
+            - name: DEMO_INSTANCE
+              value: kind-pod-a
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jdwp-demo-b
+  namespace: jdwp-demo
+  labels:
+    app: jdwp-demo-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jdwp-demo-b
+  template:
+    metadata:
+      labels:
+        app: jdwp-demo-b
+    spec:
+      containers:
+        - name: app
+          image: jdwp-debug-server:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+            - name: jdwp
+              containerPort: 5005
+          env:
+            - name: DEMO_DATA_DIR
+              value: /app/data
+            - name: DEMO_INSTANCE
+              value: kind-pod-b
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jdwp-demo-a
+  namespace: jdwp-demo
+  labels:
+    app: jdwp-demo-a
+spec:
+  type: NodePort
+  selector:
+    app: jdwp-demo-a
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+      nodePort: 30081
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jdwp-demo-b
+  namespace: jdwp-demo
+  labels:
+    app: jdwp-demo-b
+spec:
+  type: NodePort
+  selector:
+    app: jdwp-demo-b
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+      nodePort: 30082
+      protocol: TCP

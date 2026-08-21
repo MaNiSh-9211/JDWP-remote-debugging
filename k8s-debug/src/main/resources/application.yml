@@ -1,0 +1,41 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: k8s-jdwp-debugger
+
+# Kubernetes settings
+k8s:
+  namespace: default
+  jdwp:
+    port: 5005
+  # Set to true to use kubectl port-forward instead of fabric8 client
+  use-kubectl-portforward: false
+
+# Debug session settings
+debug:
+  session:
+    # Session timeout in seconds (default: 5 minutes)
+    timeout-seconds: 300
+  # Maximum concurrent debug sessions
+  max-sessions: 10
+
+# Logging
+logging:
+  level:
+    root: INFO
+    com.debugger: DEBUG
+    io.fabric8.kubernetes: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# Actuator endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always

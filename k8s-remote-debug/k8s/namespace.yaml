@@ -1,0 +1,12 @@
+---
+# Namespace for debugging services
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: debug-services
+  labels:
+    name: debug-services
+    purpose: remote-debugging
+    environment: development
+  annotations:
+    description: "Namespace for services with JDWP debugging enabled"
