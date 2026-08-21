@@ -35,4 +35,5 @@ contextBridge.exposeInMainWorld('jdwpElectron', {
   podJdwpForward: (opts) => ipcRenderer.invoke('pod-jdwp-forward', opts),
   podJdwpForwardStop: (opts) => ipcRenderer.invoke('pod-jdwp-forward-stop', opts),
   podJdwpForwardStatus: () => ipcRenderer.invoke('pod-jdwp-forward-status'),
+  gitListRepos: (opts) => ipcRenderer.invoke('git-list-repos', opts),
 })

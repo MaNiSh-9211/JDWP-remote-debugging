@@ -6,6 +6,7 @@ const { validateApiBase, setupContentSecurityPolicy, attachNavigationGuards } = 
 const { registerClusterExecIpc } = require('./cluster-exec.cjs')
 const { registerKindPortForwardIpc, killPfOnAppQuit } = require('./kind-port-forward.cjs')
 const { registerPodJdwpForwardIpc, killAllForwards } = require('./pod-jdwp-forward.cjs')
+const { registerGitProvidersIpc } = require('./git-providers.cjs')
 
 function looksLikeJdwpMonorepoRoot(dir) {
   try {
@@ -98,6 +99,7 @@ function createWindow() {
 registerClusterExecIpc(ipcMain)
 registerKindPortForwardIpc(ipcMain)
 registerPodJdwpForwardIpc(ipcMain)
+registerGitProvidersIpc(ipcMain)
 killPfOnAppQuit(app)
 app.on('before-quit', () => killAllForwards())
 

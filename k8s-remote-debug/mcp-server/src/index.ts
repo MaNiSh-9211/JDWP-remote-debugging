@@ -42,13 +42,24 @@ let sessionManager: SessionManager;
 let jdwpClientProcess: ChildProcess | null = null;
 
 /**
- * Start the Java JDWP client as a subprocess
+ * Ensure the Java JDWP client is available.
+ * If one is already running on the port (e.g. started by the user or by
+ * jdwp-mcp), reuse it instead of spawning a duplicate that would fail to bind.
  */
 async function startJdwpClient(): Promise<void> {
+  // Reuse an already-running client if reachable.
+  for (let i = 0; i < 3; i++) {
+    if (await jdwpClient.isReady()) {
+      console.error('[MCP] JDWP client already running on port ' + JDWP_CLIENT_PORT + ', reusing it');
+      return;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+
   const jarPath = path.resolve(__dirname, '../../../client/target/debug-client-1.0.0.jar');
-  
+
   console.error(`[MCP] Starting JDWP client from: ${jarPath}`);
-  
+
   jdwpClientProcess = spawn('java', [
     '-jar', jarPath,
     '--server.port=' + JDWP_CLIENT_PORT
@@ -78,7 +89,7 @@ async function startJdwpClient(): Promise<void> {
     }
     await new Promise(r => setTimeout(r, 1000));
   }
-  
+
   throw new Error('JDWP client failed to start');
 }
 

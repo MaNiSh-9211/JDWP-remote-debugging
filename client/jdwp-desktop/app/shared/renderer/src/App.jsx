@@ -868,13 +868,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNav])
 
-  const debugSelectedPod = useCallback(async () => {
+  const debugSelectedPod = useCallback(async (podArg) => {
     const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
     if (!electron?.podJdwpForward) {
       showToast('Generic pod attach needs JDWP Studio (Electron)', true)
       return
     }
-    const pod = (selectedPod || '').trim()
+    const pod = String(podArg || selectedPod || '').trim()
     if (!pod) {
       showToast('Select a pod first', true)
       return
@@ -947,6 +947,66 @@ export default function App() {
     const iv = setInterval(tick, 3000)
     return () => { cancelled = true; clearInterval(iv) }
   }, [activeNav])
+
+  // ---- Services: GitHub / Bitbucket repos ↔ running pods -------------------
+  // Token is memory-only on purpose; provider + owner are persisted.
+
+  const [gitProvider, setGitProvider] = useState(() => localStorage.getItem('jdwp-git-provider') || 'github')
+  const [gitOwner, setGitOwner] = useState(() => localStorage.getItem('jdwp-git-owner') || '')
+  const [gitToken, setGitToken] = useState('')
+  const [gitRepos, setGitRepos] = useState([])
+  const [gitError, setGitError] = useState(null)
+  const [gitLoading, setGitLoading] = useState(false)
+  const [gitSearch, setGitSearch] = useState('')
+  const [selectedService, setSelectedService] = useState('')
+
+  useEffect(() => {
+    localStorage.setItem('jdwp-git-provider', gitProvider)
+    localStorage.setItem('jdwp-git-owner', gitOwner)
+  }, [gitProvider, gitOwner])
+
+  const loadServices = useCallback(async () => {
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.gitListRepos) {
+      showToast('Services discovery needs JDWP Studio (Electron)', true)
+      return
+    }
+    if (!(gitToken || '').trim()) {
+      showToast('Paste an access token first (read-only scope is enough). It stays in memory only.', true)
+      return
+    }
+    setGitLoading(true)
+    try {
+      const res = await electron.gitListRepos({
+        provider: gitProvider,
+        token: gitToken.trim(),
+        owner: gitOwner.trim(),
+      })
+      if (res?.ok) {
+        setGitRepos(res.repos)
+        setGitError(res.repos.length === 0 ? 'No repositories found for this token/scope' : null)
+      } else {
+        setGitRepos([])
+        setGitError(res?.error || 'Failed to list repositories')
+      }
+    } finally {
+      setGitLoading(false)
+    }
+  }, [gitProvider, gitToken, gitOwner, showToast])
+
+  // Pods whose name contains the selected service name (repo name convention).
+  const servicePods = (() => {
+    if (!selectedService) return []
+    const needle = selectedService.toLowerCase()
+    return podList.filter((p) => p.name.toLowerCase().includes(needle))
+  })()
+
+  const debugServicePod = useCallback(
+    async (podName) => {
+      await debugSelectedPod(podName)
+    },
+    [debugSelectedPod],
+  )
 
   const seedBreakpointsFromApi = async () => {
     if (!connected) {
@@ -2337,7 +2397,110 @@ export default function App() {
               />
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
                 <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: 11, marginBottom: 6 }}>
-                  Attach to any pod — discover pods in the namespace above, forward its JDWP port to localhost:5005 and attach.
+                  Services — connect GitHub or Bitbucket to list your repositories and jump straight to their running
+                  pods. Tokens are read-only scope, kept in memory only, never persisted.
+                </label>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    value={gitProvider}
+                    onChange={(e) => { setGitProvider(e.target.value); setGitRepos([]); setGitError(null) }}
+                    style={{ padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 11 }}
+                  >
+                    <option value="github">GitHub</option>
+                    <option value="bitbucket">Bitbucket</option>
+                  </select>
+                  {gitProvider === 'bitbucket' && (
+                    <input
+                      value={gitOwner}
+                      onChange={(e) => setGitOwner(e.target.value)}
+                      placeholder="workspace"
+                      style={{ width: 130, padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 11 }}
+                    />
+                  )}
+                  {!gitProvider && gitProvider === 'github' && null}
+                  <input
+                    type="password"
+                    value={gitToken}
+                    onChange={(e) => setGitToken(e.target.value)}
+                    placeholder={gitProvider === 'bitbucket' ? 'Bitbucket access token' : 'GitHub token (repo:read)'}
+                    style={{ flex: 1, minWidth: 180, padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: 11 }}
+                  />
+                  <button type="button" className="btn" disabled={gitLoading} onClick={loadServices}>
+                    {gitLoading ? 'Loading…' : 'Load services'}
+                  </button>
+                </div>
+                {gitProvider === 'github' && (
+                  <input
+                    value={gitOwner}
+                    onChange={(e) => setGitOwner(e.target.value)}
+                    placeholder="optional — narrow to an org/user (default: everything the token can see)"
+                    style={{ width: '100%', marginTop: 6, padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 11 }}
+                  />
+                )}
+                {gitError && (
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>{gitError}</div>
+                )}
+                {gitRepos.length > 0 && (
+                  <>
+                    <input
+                      value={gitSearch}
+                      onChange={(e) => setGitSearch(e.target.value)}
+                      placeholder={`filter ${gitRepos.length} services…`}
+                      style={{ width: '100%', marginTop: 6, padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 11 }}
+                    />
+                    <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {gitRepos
+                        .filter((r) => !gitSearch || r.name.toLowerCase().includes(gitSearch.toLowerCase()))
+                        .slice(0, 50)
+                        .map((r) => (
+                          <button
+                            key={r.fullName}
+                            type="button"
+                            className="btn btn-ghost"
+                            title={`${r.fullName}${r.language ? ` · ${r.language}` : ''}`}
+                            style={{
+                              textAlign: 'left', fontSize: 11, fontFamily: 'var(--font-mono)',
+                              fontWeight: selectedService === r.name ? 700 : 400,
+                              border: selectedService === r.name ? '1px solid var(--accent, #58a6ff)' : 'none',
+                            }}
+                            onClick={() => { setSelectedService(r.name); discoverPods() }}
+                          >
+                            {r.name}{r.private ? ' 🔒' : ''}
+                          </button>
+                        ))}
+                    </div>
+                  </>
+                )}
+                {selectedService && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>
+                      Pods matching <code>{selectedService}</code> in namespace <code>{k8sNamespace}</code>:
+                    </div>
+                    {servicePods.length === 0 ? (
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        No pods found for this service name — it may not be deployed here, or uses a different name/namespace.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        {servicePods.map((p) => (
+                          <div key={p.name} style={{ display: 'flex', gap: 6, alignItems: 'center', fontFamily: 'var(--font-mono)', fontSize: 10 }}>
+                            <span style={{ color: p.running ? 'var(--ok, #3fb950)' : 'var(--text-muted)' }}>●</span>
+                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</span>
+                            <span style={{ color: 'var(--text-muted)' }}>{p.phase}</span>
+                            <button type="button" className="btn" style={{ fontSize: 9, padding: '2px 8px' }} disabled={!p.running || busy} onClick={() => debugServicePod(p.name)}>
+                              Debug
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: 11, marginBottom: 6 }}>
+                  Attach to any pod — discover pods in the namespace above, forward its JDWP port to localhost:5005
+                  and attach.
                 </label>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                   <button type="button" className="btn btn-ghost" style={{ fontSize: 10 }} onClick={discoverPods}>
