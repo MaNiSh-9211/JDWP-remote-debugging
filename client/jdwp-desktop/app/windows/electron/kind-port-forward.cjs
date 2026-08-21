@@ -38,8 +38,9 @@ function killPf() {
   pfProcess = null
 }
 
-function getPodName(namespace, appLabel, kubeContext) {
+function getPodName(namespace, appLabel, kubeContext, kubeconfig) {
   const args = [
+    ...(kubeconfig ? ['--kubeconfig', kubeconfig] : []),
     ...(kubeContext ? ['--context', kubeContext] : []),
     'get',
     'pod',
@@ -61,11 +62,12 @@ function getPodName(namespace, appLabel, kubeContext) {
   return name
 }
 
-function startForward({ instance, namespace = 'jdwp-demo', localPort = 5005, kubeContext = 'kind-jdwp-demo' }) {
+function startForward({ instance, namespace = 'jdwp-demo', localPort = 5005, kubeContext = 'kind-jdwp-demo', kubeconfig }) {
   killPf()
   const appLabel = instance === 'b' ? 'jdwp-demo-b' : 'jdwp-demo-a'
-  const pod = getPodName(namespace, appLabel, kubeContext)
+  const pod = getPodName(namespace, appLabel, kubeContext, kubeconfig)
   const args = [
+    ...(kubeconfig ? ['--kubeconfig', kubeconfig] : []),
     ...(kubeContext ? ['--context', kubeContext] : []),
     '-n',
     namespace,
@@ -79,7 +81,7 @@ function startForward({ instance, namespace = 'jdwp-demo', localPort = 5005, kub
     detached: false,
     env: kubectlEnv(),
   })
-  lastInfo = { podName: pod, instance, localPort, namespace, appLabel }
+  lastInfo = { podName: pod, instance, localPort, namespace, appLabel, startedAt: Date.now() }
 
   return new Promise((resolve, reject) => {
     let settled = false
@@ -98,6 +100,7 @@ function startForward({ instance, namespace = 'jdwp-demo', localPort = 5005, kub
       if (code !== 0 && code !== null) {
         failEarly(`kubectl port-forward exited with code ${code}`)
       }
+      lastInfo = null
     })
     setTimeout(() => {
       if (!pfProcess || pfProcess.killed) return
@@ -119,13 +122,19 @@ function registerKindPortForwardIpc(ipcMain) {
       if (instance !== 'a' && instance !== 'b') {
         throw new Error('instance must be "a" or "b"')
       }
-      const namespace = typeof opts?.namespace === 'string' ? opts.namespace : 'jdwp-demo'
-      const localPort = Number(opts?.localPort) || 5005
-      const kubeContext = typeof opts?.kubeContext === 'string' ? opts.kubeContext : 'kind-jdwp-demo'
+      const namespace = typeof opts?.namespace === 'string' && opts.namespace.trim() ? opts.namespace.trim() : 'jdwp-demo'
+      // Pod B defaults to host port 5006 so A and B can be attached side by side.
+      const defaultLocalPort = instance === 'b' ? 5006 : 5005
+      const localPort = Number(opts?.localPort) || defaultLocalPort
+      const kubeContext = typeof opts?.kubeContext === 'string' ? opts.kubeContext.trim() : 'kind-jdwp-demo'
+      const kubeconfig = typeof opts?.kubeconfig === 'string' ? opts.kubeconfig.trim() : ''
       if (!/^[\w-]+$/.test(namespace)) {
         throw new Error('Invalid namespace')
       }
-      return await startForward({ instance, namespace, localPort, kubeContext })
+      if (/[\s;"'|&<>]/.test(kubeContext)) {
+        throw new Error('Invalid kube context')
+      }
+      return await startForward({ instance, namespace, localPort, kubeContext, kubeconfig })
     } catch (e) {
       return { ok: false, message: e.message || String(e) }
     }

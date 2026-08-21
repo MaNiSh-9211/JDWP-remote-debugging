@@ -236,28 +236,66 @@ export default function App() {
   const { lines: activityLines, push: pushActivity } = useActivityLog()
 
   const [activeNav, setActiveNav] = useState('debugger')
-  const [k8sName, setK8sName] = useState(() => loadK8sPrefs().name || '')
   const [k8sContext, setK8sContext] = useState(() => loadK8sPrefs().context || '')
   const [k8sNamespace, setK8sNamespace] = useState(() => loadK8sPrefs().namespace || 'default')
-  const [k8sApiServer, setK8sApiServer] = useState(() => loadK8sPrefs().apiServer || '')
   const [k8sKubeconfig, setK8sKubeconfig] = useState(() => loadK8sPrefs().kubeconfig || '')
-  const [k8sTargetPod, setK8sTargetPod] = useState(() => loadK8sPrefs().targetPod || '')
   const [k8sNotes, setK8sNotes] = useState(() => loadK8sPrefs().notes || '')
+  // Live cluster data (not persisted — always re-discovered)
+  const [kubeContextList, setKubeContextList] = useState([])
+  const [kubeContextError, setKubeContextError] = useState(null)
+  const [kindForwardStatus, setKindForwardStatus] = useState(null)
 
   useEffect(() => {
     localStorage.setItem(
       'jdwp-k8s-cluster',
       JSON.stringify({
-        name: k8sName,
         context: k8sContext,
         namespace: k8sNamespace,
-        apiServer: k8sApiServer,
         kubeconfig: k8sKubeconfig,
-        targetPod: k8sTargetPod,
         notes: k8sNotes,
       }),
     )
-  }, [k8sName, k8sContext, k8sNamespace, k8sApiServer, k8sKubeconfig, k8sTargetPod, k8sNotes])
+  }, [k8sContext, k8sNamespace, k8sKubeconfig, k8sNotes])
+
+  // Discover kube contexts from the local kubectl config (read-only).
+  const refreshKubeContexts = useCallback(async () => {
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.kubeContexts) return
+    const res = await electron.kubeContexts({ kubeconfig: (k8sKubeconfig || '').trim() || undefined })
+    if (res?.ok && Array.isArray(res.contexts)) {
+      setKubeContextList(res.contexts)
+      setKubeContextError(null)
+      // Auto-select the current default context if none chosen yet.
+      if (!k8sContext && res.contexts.length > 0) {
+        setK8sContext(res.contexts[0])
+      }
+    } else {
+      setKubeContextList([])
+      setKubeContextError(res?.error || 'kubectl not available')
+    }
+  }, [k8sKubeconfig, k8sContext])
+
+  useEffect(() => {
+    if (activeNav === 'cluster') refreshKubeContexts()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeNav, k8sKubeconfig])
+
+  // Poll the port-forward status so the UI shows whether the tunnel is alive.
+  useEffect(() => {
+    if (activeNav !== 'cluster' && activeNav !== 'debugger') return
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.kindJdwpForwardStatus) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const s = await electron.kindJdwpForwardStatus()
+        if (!cancelled) setKindForwardStatus(s)
+      } catch { /* ignore */ }
+    }
+    tick()
+    const iv = setInterval(tick, 3000)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [activeNav])
 
   useEffect(() => {
     localStorage.setItem('jdwp-right-panels', JSON.stringify(rightPanels))
@@ -728,11 +766,18 @@ export default function App() {
           setVarsEnhanced(null)
           await refreshStatus()
         }
-        const fr = await electron.kindJdwpForward({ instance })
+        // Honor the Cluster panel settings — context/namespace/kubeconfig apply here too.
+        const fr = await electron.kindJdwpForward({
+          instance,
+          namespace: (k8sNamespace || '').trim() || undefined,
+          kubeContext: (k8sContext || '').trim() || undefined,
+          kubeconfig: (k8sKubeconfig || '').trim() || undefined,
+        })
         if (!fr?.ok) {
           showToast(fr?.message || 'kubectl port-forward failed', true)
           return
         }
+        const jdwpPort = fr.localPort || (instance === 'b' ? 5006 : 5005)
         const base = instance === 'a' ? 'http://localhost:9081' : 'http://localhost:9082'
         const proxy = await unwrap(debugApi.setDemoAppBase(base))
         if (!proxy.ok || proxy.data?.success === false) {
@@ -743,18 +788,18 @@ export default function App() {
           return
         }
         setDemoAppBaseHint(proxy.data.baseUrl || base)
-        setPort('5005')
+        setPort(String(jdwpPort))
         setJdwpAttachProfile(instance === 'a' ? 'k8s-kind-a' : 'k8s-kind-b')
         const jdwpHost = (host || '').trim() || 'localhost'
         await new Promise((r) => setTimeout(r, 1500))
         setJdwpConnecting(true)
-        const conn = await unwrap(debugApi.connect(jdwpHost, 5005))
+        const conn = await unwrap(debugApi.connect(jdwpHost, jdwpPort))
         setJdwpConnecting(false)
         if (conn.ok && conn.data.success !== false) {
           setConnected(true)
           setClientApiReachable(true)
-          showToast(`Debugging Kind pod ${instance.toUpperCase()} (${fr.podName}) — probes use ${base} via client`)
-          pushActivity(`Kind ${instance}: ${fr.podName} → JDWP ${jdwpHost}:5005`)
+          showToast(`Debugging Kind pod ${instance.toUpperCase()} (${fr.podName}) — JDWP ${jdwpHost}:${jdwpPort}`)
+          pushActivity(`Kind ${instance}: ${fr.podName} → JDWP ${jdwpHost}:${jdwpPort}`)
           await refreshLogsSimple()
           await refreshThreads()
           await refreshBreakpoints()
@@ -766,7 +811,7 @@ export default function App() {
         setBusy(false)
       }
     },
-    [connected, host, refreshStatus, refreshThreads, refreshBreakpoints, refreshLogsSimple, showToast, pushActivity],
+    [connected, host, k8sNamespace, k8sContext, k8sKubeconfig, refreshStatus, refreshThreads, refreshBreakpoints, refreshLogsSimple, showToast, pushActivity],
   )
 
   const stopKindJdwpForward = useCallback(async () => {
@@ -2098,20 +2143,52 @@ export default function App() {
             )}
             {activeNav === 'cluster' && (
           <section className="panel panel--page cluster-panel">
-            <div className="panel-header">Kubernetes / cluster</div>
+            <div className="panel-header">
+              <span>Kubernetes / cluster</span>
+              {kindForwardStatus?.active && (
+                <span
+                  title={`pod/${kindForwardStatus.podName} → localhost:${kindForwardStatus.localPort}`}
+                  style={{ fontSize: 10, color: 'var(--ok, #3fb950)', fontFamily: 'var(--font-mono)' }}
+                >
+                  ● forward active: {kindForwardStatus.podName} :{kindForwardStatus.localPort}
+                </span>
+              )}
+            </div>
             <div className="panel-body cluster-panel__body">
               <p className="cluster-panel__intro">
-                Saved locally in this app. The shell runs <code>kubectl</code> on your machine (PATH) with the context and
-                namespace below. Use a custom kubeconfig path if you do not rely on the default{' '}
-                <code>~/.kube/config</code>.
+                These settings drive <strong>everything</strong> below: the kubectl shell, the one-click Kind debug
+                buttons, and port-forwards. Contexts are discovered from your local kubeconfig via{' '}
+                <code>kubectl config get-contexts</code>.
               </p>
+              {kubeContextError && kubeContextList.length === 0 && (
+                <div className="cluster-panel__snippet" style={{ color: 'var(--text-muted)' }}>
+                  <span className="cluster-panel__snippet-label">kubectl discovery</span>
+                  <pre className="mono-block cluster-panel__snippet-pre">{kubeContextError}</pre>
+                </div>
+              )}
               <div className="input-row">
-                <label>Display name</label>
-                <input value={k8sName} onChange={(e) => setK8sName(e.target.value)} placeholder="e.g. staging-east" />
-              </div>
-              <div className="input-row">
-                <label>Context</label>
-                <input value={k8sContext} onChange={(e) => setK8sContext(e.target.value)} placeholder="kubectl config get-contexts" />
+                <label>
+                  Context{' '}
+                  <button type="button" className="btn btn-ghost" style={{ fontSize: 10, padding: '1px 6px' }} onClick={refreshKubeContexts}>
+                    refresh
+                  </button>
+                </label>
+                {kubeContextList.length > 0 ? (
+                  <select value={k8sContext} onChange={(e) => setK8sContext(e.target.value)}>
+                    {!k8sContext && <option value="">— select context —</option>}
+                    {kubeContextList.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={k8sContext}
+                    onChange={(e) => setK8sContext(e.target.value)}
+                    placeholder="context name (discovery needs kubectl on PATH)"
+                  />
+                )}
               </div>
               <div className="input-row">
                 <label>Namespace</label>
@@ -2122,40 +2199,22 @@ export default function App() {
                 <input
                   value={k8sKubeconfig}
                   onChange={(e) => setK8sKubeconfig(e.target.value)}
-                  placeholder="optional — absolute path to kubeconfig (sets KUBECONFIG)"
+                  placeholder="optional — used by shell, discovery and port-forwards"
                 />
               </div>
-              <div className="input-row">
-                <label>API server</label>
-                <input
-                  value={k8sApiServer}
-                  onChange={(e) => setK8sApiServer(e.target.value)}
-                  placeholder="https://… (reference only)"
-                />
-              </div>
-              <div className="input-row">
-                <label>Debug target pod</label>
-                <input
-                  value={k8sTargetPod}
-                  onChange={(e) => setK8sTargetPod(e.target.value)}
-                  placeholder="pod/name — for port-forward / logs snippets"
-                />
-              </div>
-              <div className="cluster-panel__snippet">
-                <span className="cluster-panel__snippet-label">Port-forward JDWP (copy to shell)</span>
-                <pre className="mono-block cluster-panel__snippet-pre">
-                  {`kubectl ${k8sContext ? `--context=${k8sContext.trim()} ` : ''}${k8sNamespace ? `-n ${k8sNamespace.trim()} ` : ''}port-forward pod/${(k8sTargetPod || 'YOUR_POD').trim().replace(/^(pod|pods)\//i, '') || 'YOUR_POD'} 5005:5005`}
-                </pre>
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>
-                  Notes (service names, agent flags, team links)
-                </label>
+              <ClusterTerminal
+                context={k8sContext}
+                namespace={k8sNamespace}
+                kubeconfig={k8sKubeconfig}
+                showToast={showToast}
+              />
+              <div className="input-row" style={{ marginTop: 12 }}>
+                <label>Notes (service names, agent flags, team links)</label>
                 <textarea
                   value={k8sNotes}
                   onChange={(e) => setK8sNotes(e.target.value)}
-                  rows={4}
-                  placeholder="e.g. kubectl port-forward svc/app 5005:5005 — attach JDWP to localhost:5005"
+                  rows={3}
+                  placeholder="Local scratchpad — saved in this app only."
                   style={{
                     width: '100%',
                     padding: 10,
@@ -2169,12 +2228,6 @@ export default function App() {
                   }}
                 />
               </div>
-              <ClusterTerminal
-                context={k8sContext}
-                namespace={k8sNamespace}
-                kubeconfig={k8sKubeconfig}
-                showToast={showToast}
-              />
             </div>
           </section>
             )}

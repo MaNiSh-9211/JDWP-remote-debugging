@@ -14,7 +14,6 @@ function App() {
   const [frames, setFrames] = useState([])
   const [variables, setVariables] = useState({})
   const [breakpoints, setBreakpoints] = useState([])
-  const [classes, setClasses] = useState([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [apiResponse, setApiResponse] = useState(null)
@@ -29,7 +28,6 @@ function App() {
   const [selectedApiForBreakpoints, setSelectedApiForBreakpoints] = useState('')
   const [breakpointHit, setBreakpointHit] = useState(false)
   const [persistentClassName, setPersistentClassName] = useState('')
-  const logsEndRef = useRef(null)
   const processedThreadsRef = useRef(new Set()) // Track threads we've already processed
   const isProcessingBreakpointRef = useRef(false) // CRITICAL: Prevent processing multiple breakpoints
 
@@ -78,8 +76,7 @@ function App() {
         setMessage('Connected successfully!')
         await refreshThreads()
         await refreshBreakpoints()
-        await refreshClasses()
-        loadEndpoints()
+          loadEndpoints()
       } else {
         setMessage('Connection failed: ' + response.data.message)
       }
@@ -238,17 +235,6 @@ function App() {
     }
   }
 
-  const refreshClasses = async () => {
-    try {
-      const response = await axios.get(`${API_BASE}/classes`)
-      if (response.data.success) {
-        setClasses(response.data.classes || [])
-      }
-    } catch (error) {
-      console.error('Failed to fetch classes:', error)
-    }
-  }
-
   const loadEndpoints = async () => {
     try {
       const response = await axios.get(`${SERVER_API_BASE}/endpoints`)
@@ -334,23 +320,6 @@ function App() {
       setMessage('Error loading thread data: ' + (error.response?.data?.message || error.message))
       setVariables({})
       setCurrentLocation(null)
-    }
-  }
-
-  const handleSuspendThread = async (threadName) => {
-    try {
-      const response = await axios.post(`${API_BASE}/threads/${encodeURIComponent(threadName)}/suspend`)
-      addLog('action', '✓ Thread Suspended', { thread: threadName, response: response.data })
-      setMessage(`✓ Thread "${threadName}" suspended. All debug features are now available.`)
-      setTimeout(() => setMessage(''), 3000)
-      await refreshThreads()
-      // Auto-select the suspended thread and load its data
-      setSelectedThread(threadName)
-      await handleThreadClick(threadName)
-    } catch (error) {
-      addLog('error', '✗ Suspend Error', error.response?.data || error.message)
-      setMessage('✗ Error: ' + (error.response?.data?.message || error.message))
-      setTimeout(() => setMessage(''), 5000)
     }
   }
 
@@ -1334,8 +1303,7 @@ function App() {
                     </div>
                   ))
                 )}
-                <div ref={logsEndRef} />
-              </div>
+                      </div>
             </div>
           </div>
         </div>

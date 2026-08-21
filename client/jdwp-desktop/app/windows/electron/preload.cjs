@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('jdwpElectron', {
   readSourceUnderRoot: (root, relPath) => ipcRenderer.invoke('read-source-under-root', root, relPath),
   listDirUnderRoot: (root, relPath) => ipcRenderer.invoke('list-dir-under-root', root, relPath),
   gitCloneRepo: (opts) => ipcRenderer.invoke('git-clone-repo', opts),
-  platform: 'win32',
+  platform: process.platform,
   windowControls: {
     minimize: () => ipcRenderer.invoke('win-minimize'),
     toggleMaximize: () => ipcRenderer.invoke('win-toggle-maximize'),
@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('jdwpElectron', {
     ipcRenderer.on('window-state', handler)
     return () => ipcRenderer.removeListener('window-state', handler)
   },
+  kubeContexts: (opts) => ipcRenderer.invoke('kube-context-list', opts),
   clusterExec: (payload) => ipcRenderer.invoke('cluster-exec', payload),
   kindJdwpForward: (opts) => ipcRenderer.invoke('kind-jdwp-forward', opts),
   kindJdwpForwardStop: () => ipcRenderer.invoke('kind-jdwp-forward-stop'),

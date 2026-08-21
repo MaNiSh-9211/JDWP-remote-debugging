@@ -114,6 +114,34 @@ ipcMain.handle('get-default-api-base', () => {
   return validateApiBase(process.env.JDWP_API_BASE)
 })
 
+// Read-only kube context discovery for the Cluster panel dropdown.
+// Runs `kubectl config get-contexts` (no cluster calls, local config only).
+ipcMain.handle('kube-context-list', async (_, payload) => {
+  const kubeconfig = payload && typeof payload.kubeconfig === 'string' ? payload.kubeconfig.trim() : ''
+  const args = ['config', 'get-contexts', '--no-headers', '-o', 'name']
+  if (kubeconfig) args.unshift('--kubeconfig', kubeconfig)
+  return await new Promise((resolve) => {
+    const child = spawn('kubectl', args, { shell: false, windowsHide: true })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM') } catch { /* ignore */ }
+      resolve({ ok: false, error: 'kubectl timed out', contexts: [] })
+    }, 10000)
+    child.stdout?.on('data', (d) => { stdout += d.toString() })
+    child.stderr?.on('data', (d) => { stderr += d.toString() })
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      resolve({ ok: false, error: err.message || String(err), contexts: [] })
+    })
+    child.on('close', () => {
+      clearTimeout(timer)
+      const contexts = stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+      resolve({ ok: contexts.length > 0, error: contexts.length ? null : (stderr.trim() || 'No contexts found'), contexts })
+    })
+  })
+})
+
 ipcMain.handle('sanitize-api-base', (_, url) => {
   return validateApiBase(url)
 })
