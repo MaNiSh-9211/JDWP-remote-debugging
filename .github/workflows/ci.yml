@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  java:
+    name: Java modules (JDK 21)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [client, server, k8s-debug, k8s-remote-debug/debug-filter-lib, k8s-remote-debug/debug-agent]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build ${{ matrix.module }}
+        run: mvn -B -ntp package -DskipTests
+        working-directory: ${{ matrix.module }}
+
+  mcp-servers:
+    name: MCP servers (Node 20)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [jdwp-mcp, k8s-remote-debug/mcp-server]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ${{ matrix.module }}/package-lock.json
+      - name: Build ${{ matrix.module }}
+        run: |
+          npm ci
+          npm run build
+        working-directory: ${{ matrix.module }}
+
+  web-ui:
+    name: Web UI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: client/ui/package-lock.json
+      - name: Build React UI into client resources
+        run: |
+          npm ci
+          npm run build
+        working-directory: client/ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-ui
+          path: client/src/main/resources/static/
+          retention-days: 3
