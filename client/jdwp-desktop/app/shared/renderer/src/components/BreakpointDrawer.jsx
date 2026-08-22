@@ -24,6 +24,8 @@ export default function BreakpointDrawer({
   bpCondition,
   setBpCondition,
   toggleBp,
+  exportBps,
+  importBpsFromFile,
   addBreakpoint,
   clearBps,
   toggleMute,
@@ -130,13 +132,13 @@ export default function BreakpointDrawer({
                   />
                 </div>
               )}
-              {bpType === 'expression' && (
+              {(bpType === 'expression' || bpType === 'logpoint') && (
                 <div className="input-row">
-                  <label>Condition</label>
+                  <label>{bpType === 'logpoint' ? 'Condition (optional)' : 'Condition'}</label>
                   <input
                     value={bpCondition}
                     onChange={(e) => setBpCondition(e.target.value)}
-                    placeholder='e.g. a > 100 - suspends only when true'
+                    placeholder={bpType === 'logpoint' ? 'optional - log only when true, e.g. a > 100' : 'e.g. a > 100 - suspends only when true'}
                   />
                 </div>
               )}
@@ -181,8 +183,28 @@ export default function BreakpointDrawer({
                   Remove all
                 </button>
                 <button type="button" className="btn" disabled={!connected || busy} onClick={toggleMute}>
-                  {bpMuted ? 'Unmute' : 'Mute all'}
+                  {bpMuted ? 'Unmute all' : 'Mute all'}
                 </button>
+                <button type="button" className="btn btn-ghost" disabled={!connected || busy} onClick={exportBps} title="Download breakpoints as JSON to share">
+                  Export
+                </button>
+                <label className="btn btn-ghost" style={{ cursor: 'pointer', margin: 0 }} title="Import a breakpoints JSON file">
+                  Import
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const f = e.target.files && e.target.files[0]
+                      if (f) {
+                        const reader = new FileReader()
+                        reader.onload = () => importBpsFromFile(String(reader.result))
+                        reader.readAsText(f)
+                      }
+                      e.target.value = ''
+                    }}
+                  />
+                </label>
               </div>
               <div className="bp-drawer__list-head">Active</div>
               <ul className="bp-drawer__list">

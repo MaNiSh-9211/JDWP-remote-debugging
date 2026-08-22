@@ -253,6 +253,7 @@ export default function App() {
   const [condTrigger, setCondTrigger] = useState('')
   const [requestIdLens, setRequestIdLens] = useState('')
   const [hitStats, setHitStats] = useState({})
+  const hitStatsSeenRef = useRef({})
   const lastLogTsRef = useRef(0)
   const logEsRef = useRef(null)
   const logSplitRef = useRef(null)
@@ -928,9 +929,24 @@ export default function App() {
       showToast('Select a pod first', true)
       return
     }
-    const remotePort = Number(podJdwpPort) || 5005
+    let remotePort = Number(podJdwpPort) || 0
     setBusy(true)
     try {
+      // Auto-detect the JDWP port from the pod spec unless the user pinned one.
+      if (!remotePort && electron?.clusterExec) {
+        const det = await electron.clusterExec({
+          context: k8sContext,
+          namespace: (k8sNamespace || 'default').trim(),
+          kubeconfig: k8sKubeconfig,
+          commandLine: `get pod ${pod} -o jsonpath={.spec.containers[*].ports[?(@.name=='jdwp')].containerPort}`,
+        })
+        const found = Number(String(det?.stdout || '').trim().split(/\s+/)[0])
+        if (Number.isInteger(found) && found > 0) {
+          remotePort = found
+          pushActivity(`Auto-detected JDWP port ${found} on ${pod}`)
+        }
+      }
+      remotePort = remotePort || 5005
       if (connected) {
         await unwrap(debugApi.disconnect())
         setConnected(false)
@@ -1333,7 +1349,8 @@ export default function App() {
     }
     const reqId = bpRequestId.trim()
     const logMsg = bpType === 'logpoint' ? bpLogMessage.trim() : ''
-    const cond = bpType === 'expression' ? bpCondition.trim() : ''
+    // conditions apply to expression BPs AND optionally to logpoints
+    const cond = (bpType === 'expression' || bpType === 'logpoint') ? bpCondition.trim() : ''
     if (bpType === 'logpoint' && !logMsg) {
       showToast('Log message required for a logpoint', true)
       return
@@ -1358,7 +1375,7 @@ export default function App() {
         } else {
           r = await unwrap(debugApi.setConditionalBreakpoint(cn, ln, reqId, bpTriggerUrl.trim() || undefined))
         }
-      } else if (bpType !== 'line') {
+      } else if (bpType !== 'line' || logMsg) {
         r = await unwrap(debugApi.setAdvancedBreakpoint({ className: cn, lineNumber: ln, logMessage: logMsg || null, condition: cond || null }))
       } else {
         r = await unwrap(debugApi.setBreakpoint(cn, ln, bpTriggerUrl.trim() || undefined))
@@ -1383,6 +1400,60 @@ export default function App() {
     const r = await unwrap(debugApi.toggleBreakpoint(id, enabled))
     if (!r.ok || r.data?.success === false) showToast(r.data?.message || r.error || 'Toggle failed', true)
     await refreshBreakpoints()
+  }
+
+  // ---- Breakpoint export / import (share sets with the team) ----------------
+  const exportBps = async () => {
+    const { ok, data } = await unwrap(debugApi.listBreakpoints())
+    if (!ok || !data.breakpoints?.length) {
+      showToast('No breakpoints to export', true)
+      return
+    }
+    const blob = new Blob([JSON.stringify(data.breakpoints, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `jdwp-breakpoints-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    showToast(`Exported ${data.breakpoints.length} breakpoint(s)`)
+  }
+
+  const importBpsFromFile = async (fileText) => {
+    let list
+    try { list = JSON.parse(fileText) } catch { showToast('Invalid JSON', true); return }
+    if (!Array.isArray(list)) { showToast('Expected an array of breakpoints', true); return }
+    setBusy(true)
+    let okCount = 0
+    try {
+      for (const bp of list) {
+        const id = String(bp.id || bp.location || '')
+        const idx = id.lastIndexOf(':')
+        if (idx < 0) continue
+        const cn = id.slice(0, idx).replace(/\$\d+$/, '')
+        const ln = parseInt(id.slice(idx + 1), 10)
+        if (!cn || Number.isNaN(ln)) continue
+        try {
+          if (bp.logMessage || bp.condition || bp.minHits != null) {
+            await unwrap(debugApi.setAdvancedBreakpoint({
+              className: cn, lineNumber: ln,
+              logMessage: bp.logMessage || null,
+              condition: bp.condition || null,
+              minHits: bp.minHits != null ? Number(bp.minHits) : null,
+            }))
+          } else {
+            await unwrap(debugApi.setBreakpoint(cn, ln))
+          }
+          okCount++
+        } catch { /* skip bad entries */ }
+      }
+      await refreshBreakpoints()
+      showToast(`Imported ${okCount}/${list.length} breakpoint(s)`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const removeBp = async (id) => {
@@ -1695,11 +1766,30 @@ export default function App() {
   useEffect(() => {
     if (!connected) {
       setHitStats({})
+      hitStatsSeenRef.current = {}
       return
     }
     const load = async () => {
       const { ok, data } = await unwrap(debugApi.breakpointHitStats())
-      if (ok && data.hits && typeof data.hits === 'object') setHitStats(data.hits)
+      if (ok && data.hits && typeof data.hits === 'object') {
+        // Notify on new hits even when the user is in another panel/tab.
+        const prev = hitStatsSeenRef.current
+        let deltaTotal = 0
+        const deltas = []
+        for (const [id, count] of Object.entries(data.hits)) {
+          const before = prev[id] || 0
+          if (count > before) {
+            deltaTotal += count - before
+            deltas.push(`${id} +${count - before}`)
+          }
+        }
+        hitStatsSeenRef.current = { ...data.hits }
+        if (deltaTotal > 0) {
+          showToast(`Breakpoint hit x${deltaTotal}: ${deltas.join(', ')}`)
+          pushActivity(`Breakpoint hit: ${deltas.join(', ')}`)
+        }
+        setHitStats(data.hits)
+      }
     }
     load()
     const id = setInterval(load, 4000)
@@ -3163,6 +3253,8 @@ export default function App() {
                   bpCondition={bpCondition}
                   setBpCondition={setBpCondition}
                   toggleBp={toggleBp}
+                  exportBps={exportBps}
+                  importBpsFromFile={importBpsFromFile}
                   addBreakpoint={addBreakpoint}
                   clearBps={clearBps}
                   toggleMute={toggleMute}

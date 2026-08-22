@@ -883,48 +883,51 @@ public class JdwpService {
         }
 
         BpOptions opts = breakpointOptions.get(bpId);
-        int hitNumber = recordBreakpointHit(bpId); // 1-based count for this event
+        int hitNumber = recordBreakpointHit(bpId); // single 1-based count per hit
 
+        // 1. Disabled -> resume immediately.
         if (opts != null && opts.disabled) {
             try { event.thread().resume(); } catch (Exception ignore) { }
             logger.debug("[JDWP CLIENT] Breakpoint {} disabled - resumed", bpId);
             return;
         }
 
+        // 2. Hit-count gate: skip early hits ("break after N hits").
         if (opts != null && opts.minHits != null && hitNumber < opts.minHits) {
             try { event.thread().resume(); } catch (Exception ignore) { }
             logger.debug("[JDWP CLIENT] Breakpoint {} hit {} < {} - skipped", bpId, hitNumber, opts.minHits);
             return;
         }
 
+        // 3. Condition gate: applies to ALL breakpoint kinds (incl. logpoints).
+        boolean conditionPassed = true;
+        if (opts != null && opts.condition != null && !opts.condition.isBlank()) {
+            try {
+                String res = evaluateExpression(threadName, opts.condition);
+                conditionPassed = isTruthy(res);
+            } catch (Exception e) {
+                logger.warn("[JDWP CLIENT] Condition '{}' eval failed on {}: {} - treating as false",
+                        opts.condition, threadName, e.getMessage());
+                conditionPassed = false;
+            }
+            if (!conditionPassed) {
+                try { event.thread().resume(); } catch (Exception ignore) { }
+                logger.debug("[JDWP CLIENT] Condition false at {} on {} - resumed", bpId, threadName);
+                return;
+            }
+        }
+
+        // 4. Logpoint: capture locals, emit rendered message, resume. Never suspends.
         if (opts != null && opts.logMessage != null && !opts.logMessage.isBlank()) {
             Map<String, String> locals = captureFrameLocals(event.thread());
             String rendered = renderLogTemplate(opts.logMessage, locals);
             emitLogpoint(bpId, threadName, rendered);
-            recordBreakpointHit(bpId);
             try { event.thread().resume(); } catch (Exception ignore) { }
             return;
         }
 
-        if (opts != null && opts.condition != null && !opts.condition.isBlank()) {
-            boolean truthy;
-            try {
-                String res = evaluateExpression(threadName, opts.condition);
-                truthy = isTruthy(res);
-            } catch (Exception e) {
-                logger.warn("[JDWP CLIENT] Condition '{}' eval failed on {}: {} - treating as false",
-                        opts.condition, threadName, e.getMessage());
-                truthy = false;
-            }
-            if (!truthy) {
-                try { event.thread().resume(); } catch (Exception ignore) { }
-                recordBreakpointHit(bpId);
-                logger.debug("[JDWP CLIENT] Condition false at {} on {} - resumed", bpId, threadName);
-                return;
-            }
-            // condition true: fall through to normal suspension recording
-        }
-
+        // 5. Plain/conditional suspension: record metadata; the conditional-resume
+        //    pass decides whether this request stays suspended (request-scoped).
         recordEventHit(event);
     }
 
