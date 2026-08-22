@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('jdwpElectron', {
     return () => ipcRenderer.removeListener('window-state', handler)
   },
   kubeContexts: (opts) => ipcRenderer.invoke('kube-context-list', opts),
+  pickKubeconfigFile: () => ipcRenderer.invoke('pick-kubeconfig-file'),
   clusterExec: (payload) => ipcRenderer.invoke('cluster-exec', payload),
   kindJdwpForward: (opts) => ipcRenderer.invoke('kind-jdwp-forward', opts),
   kindJdwpForwardStop: () => ipcRenderer.invoke('kind-jdwp-forward-stop'),

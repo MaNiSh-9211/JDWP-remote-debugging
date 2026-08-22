@@ -281,6 +281,32 @@ export default function App() {
   }, [k8sContext, k8sNamespace, k8sKubeconfig, k8sNotes])
 
   // Discover kube contexts from the local kubectl config (read-only).
+  const [clusterReachable, setClusterReachable] = useState(null) // null=unknown, true/false after test
+  const [nsList, setNsList] = useState([])
+
+  const testClusterConnection = useCallback(async () => {
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.clusterExec) return
+    const res = await electron.clusterExec({
+      context: k8sContext,
+      namespace: '',
+      kubeconfig: k8sKubeconfig,
+      commandLine: 'get namespaces -o custom-columns=NAME:.metadata.name --no-headers',
+    })
+    if (res?.ok) {
+      setNsList(String(res.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean))
+      setClusterReachable(true)
+    } else {
+      setNsList([])
+      setClusterReachable(false)
+    }
+  }, [k8sContext, k8sKubeconfig])
+
+  useEffect(() => {
+    if (activeNav === 'cluster') testClusterConnection()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeNav, k8sContext, k8sKubeconfig])
+
   const refreshKubeContexts = useCallback(async () => {
     const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
     if (!electron?.kubeContexts) return
@@ -2667,16 +2693,59 @@ export default function App() {
                 )}
               </div>
               <div className="input-row">
-                <label>Namespace</label>
-                <input value={k8sNamespace} onChange={(e) => setK8sNamespace(e.target.value)} placeholder="default" />
+                <label>
+                  Namespace
+                  {clusterReachable !== null && (
+                    <span
+                      style={{
+                        marginLeft: 8,
+                        fontSize: 10,
+                        fontFamily: 'var(--font-mono)',
+                        color: clusterReachable ? 'var(--ok, #3fb950)' : '#f85149',
+                      }}
+                    >
+                      {clusterReachable ? '● connected' : '● unreachable'}
+                    </span>
+                  )}
+                </label>
+                <input
+                  value={k8sNamespace}
+                  onChange={(e) => setK8sNamespace(e.target.value)}
+                  placeholder="default"
+                  list="ns-datalist"
+                />
+                <datalist id="ns-datalist">
+                  {nsList.map((n) => (
+                    <option key={n} value={n} />
+                  ))}
+                </datalist>
               </div>
               <div className="input-row">
-                <label>Kubeconfig path</label>
-                <input
-                  value={k8sKubeconfig}
-                  onChange={(e) => setK8sKubeconfig(e.target.value)}
-                  placeholder="optional — used by shell, discovery and port-forwards"
-                />
+                <label>Kubeconfig</label>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input
+                    value={k8sKubeconfig}
+                    onChange={(e) => setK8sKubeconfig(e.target.value)}
+                    placeholder="default (~/.kube/config) or Browse…"
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={async () => {
+                      const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+                      if (!electron?.pickKubeconfigFile) {
+                        showToast('File picker needs JDWP Studio (Electron)', true)
+                        return
+                      }
+                      const res = await electron.pickKubeconfigFile()
+                      if (res?.ok && res.path) setK8sKubeconfig(res.path)
+                    }}
+                    title="Import a company-provided kubeconfig file"
+                  >
+                    Browse…
+                  </button>
+                </div>
               </div>
               <ClusterTerminal
                 context={k8sContext}

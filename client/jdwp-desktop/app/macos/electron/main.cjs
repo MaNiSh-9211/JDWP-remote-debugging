@@ -119,6 +119,21 @@ ipcMain.handle('get-default-api-base', () => {
   return validateApiBase(process.env.JDWP_API_BASE)
 })
 
+// Native file picker for importing a kubeconfig without leaving the app.
+ipcMain.handle('pick-kubeconfig-file', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const result = await dialog.showOpenDialog(win, {
+    title: 'Select kubeconfig file',
+    properties: ['openFile'],
+    filters: [
+      { name: 'kubeconfig', extensions: ['yaml', 'yml', 'json', 'conf', 'config'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+  })
+  if (result.canceled || !result.filePaths.length) return { ok: false }
+  return { ok: true, path: result.filePaths[0] }
+})
+
 // Read-only kube context discovery for the Cluster panel dropdown.
 // Runs `kubectl config get-contexts` (no cluster calls, local config only).
 ipcMain.handle('kube-context-list', async (_, payload) => {
