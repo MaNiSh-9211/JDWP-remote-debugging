@@ -48,22 +48,24 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve lowercase image owner
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
       - name: Build & push debug-server demo image
         uses: docker/build-push-action@v6
         with:
           context: server
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/jdwp-debug-server:${{ github.ref_name }}
-            ghcr.io/${{ github.repository_owner }}/jdwp-debug-server:latest
+            ghcr.io/${{ env.OWNER_LC }}/jdwp-debug-server:${{ github.ref_name }}
+            ghcr.io/${{ env.OWNER_LC }}/jdwp-debug-server:latest
       - name: Build & push k8s-debugger image
         uses: docker/build-push-action@v6
         with:
           context: k8s-debug
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/k8s-jdwp-debugger:${{ github.ref_name }}
-            ghcr.io/${{ github.repository_owner }}/k8s-jdwp-debugger:latest
+            ghcr.io/${{ env.OWNER_LC }}/k8s-jdwp-debugger:${{ github.ref_name }}
+            ghcr.io/${{ env.OWNER_LC }}/k8s-jdwp-debugger:latest
 
   electron:
     name: Desktop app (${{ matrix.os }})
