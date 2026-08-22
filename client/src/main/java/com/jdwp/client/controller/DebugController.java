@@ -413,7 +413,8 @@ public class DebugController {
             int lineNumber = Integer.parseInt(String.valueOf(body.get("lineNumber")));
             String logMessage = body.get("logMessage") == null ? null : String.valueOf(body.get("logMessage"));
             String condition = body.get("condition") == null ? null : String.valueOf(body.get("condition"));
-            Map<String, Object> result = jdwpService.setAdvancedBreakpoint(className, lineNumber, logMessage, condition);
+            Integer minHits = body.get("minHits") == null ? null : Integer.valueOf(String.valueOf(body.get("minHits")));
+            Map<String, Object> result = jdwpService.setAdvancedBreakpoint(className, lineNumber, logMessage, condition, minHits);
             Map<String, Object> response = new HashMap<>();
             response.put("success", true);
             response.putAll(result);

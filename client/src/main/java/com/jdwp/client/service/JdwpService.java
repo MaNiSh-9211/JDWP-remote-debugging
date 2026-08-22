@@ -50,6 +50,7 @@ public class JdwpService {
     public static final class BpOptions {
         public String logMessage;      // when set: logpoint - capture vars, emit, auto-resume
         public String condition;       // when set: suspend only if expression evaluates truthy
+        public Integer minHits;        // when set: only start suspending from the Nth hit
         public volatile boolean disabled;
     }
 
@@ -666,7 +667,8 @@ public class JdwpService {
      * @return map with breakpointId + resolved location info
      */
     public synchronized Map<String, Object> setAdvancedBreakpoint(String className, int lineNumber,
-                                                                  String logMessage, String condition) {
+                                                                  String logMessage, String condition,
+                                                                  Integer minHits) {
         // One breakpoint per location (IDE semantics): replace any existing one.
         String existingId = className + ":" + lineNumber;
         if (breakpoints.containsKey(existingId)) {
@@ -676,13 +678,9 @@ public class JdwpService {
         BpOptions opts = new BpOptions();
         if (logMessage != null && !logMessage.isBlank()) opts.logMessage = logMessage.trim();
         if (condition != null && !condition.isBlank()) opts.condition = condition.trim();
-        if (opts.logMessage != null || opts.condition != null) {
+        if (minHits != null && minHits > 0) opts.minHits = minHits;
+        if (opts.logMessage != null || opts.condition != null || opts.minHits != null) {
             breakpointOptions.put(bpId, opts);
-            if (opts.logMessage != null) {
-                // logpoints never keep the thread suspended
-                BreakpointRequest req = breakpoints.get(bpId);
-                // suspension policy already EVENT_THREAD; pump resumes on hit.
-            }
         } else {
             breakpointOptions.remove(bpId);
         }
@@ -690,6 +688,7 @@ public class JdwpService {
         out.put("breakpointId", bpId);
         out.put("logMessage", opts.logMessage);
         out.put("condition", opts.condition);
+        out.put("minHits", opts.minHits);
         return out;
     }
 
@@ -884,10 +883,17 @@ public class JdwpService {
         }
 
         BpOptions opts = breakpointOptions.get(bpId);
+        int hitNumber = recordBreakpointHit(bpId); // 1-based count for this event
 
         if (opts != null && opts.disabled) {
             try { event.thread().resume(); } catch (Exception ignore) { }
             logger.debug("[JDWP CLIENT] Breakpoint {} disabled - resumed", bpId);
+            return;
+        }
+
+        if (opts != null && opts.minHits != null && hitNumber < opts.minHits) {
+            try { event.thread().resume(); } catch (Exception ignore) { }
+            logger.debug("[JDWP CLIENT] Breakpoint {} hit {} < {} - skipped", bpId, hitNumber, opts.minHits);
             return;
         }
 
@@ -3548,11 +3554,11 @@ public class JdwpService {
         return out;
     }
 
-    private void recordBreakpointHit(String bpId) {
+    private int recordBreakpointHit(String bpId) {
         if (bpId == null) {
-            return;
+            return 0;
         }
-        breakpointHitCounts.computeIfAbsent(bpId, k -> new AtomicInteger()).incrementAndGet();
+        return breakpointHitCounts.computeIfAbsent(bpId, k -> new AtomicInteger()).incrementAndGet();
     }
 
     public synchronized Map<String, Integer> getBreakpointHitCounts() {

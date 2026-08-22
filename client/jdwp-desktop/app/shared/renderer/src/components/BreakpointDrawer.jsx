@@ -15,6 +15,8 @@ export default function BreakpointDrawer({
   setBpTriggerUrl,
   bpRequestId,
   setBpRequestId,
+  bpMinHits,
+  setBpMinHits,
   bpType,
   setBpType,
   bpLogMessage,
@@ -145,6 +147,16 @@ export default function BreakpointDrawer({
                     value={bpRequestId}
                     onChange={(e) => setBpRequestId(e.target.value)}
                     placeholder="only suspend requests with this X-Debug-Request-Id"
+                  />
+                </div>
+              )}
+              {bpType === 'line' && (
+                <div className="input-row">
+                  <label>Break after N hits</label>
+                  <input
+                    value={bpMinHits}
+                    onChange={(e) => setBpMinHits(e.target.value.replace(/\D/g, ''))}
+                    placeholder="optional — e.g. 5 suspends only on the 5th hit"
                   />
                 </div>
               )}

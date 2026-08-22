@@ -128,6 +128,25 @@ export default function App() {
   const [bpType, setBpType] = useState('line')
   const [bpLogMessage, setBpLogMessage] = useState('')
   const [bpCondition, setBpCondition] = useState('')
+  const [bpMinHits, setBpMinHits] = useState('')
+  // Saved connection targets (name -> host/port), persisted locally.
+  const [connProfiles, setConnProfiles] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('jdwp-conn-profiles') || '[]') } catch { return [] }
+  })
+  const [selectedProfile, setSelectedProfile] = useState('')
+
+  useEffect(() => {
+    localStorage.setItem('jdwp-conn-profiles', JSON.stringify(connProfiles))
+  }, [connProfiles])
+
+  const saveCurrentProfile = useCallback(() => {
+    const name = window.prompt('Profile name (e.g. prod-orders):')
+    if (!name || !name.trim()) return
+    const profile = { name: name.trim(), host: (host || '').trim() || 'localhost', port: (port || '').trim() || '5005' }
+    setConnProfiles((list) => [...list.filter((x) => x.name !== profile.name), profile])
+    setSelectedProfile(profile.name)
+    showToast(`Saved target '${profile.name}'`)
+  }, [host, port, showToast])
   const [excClass, setExcClass] = useState('')
   const [evalExpr, setEvalExpr] = useState('')
   const [evalOut, setEvalOut] = useState('')
@@ -1302,10 +1321,19 @@ export default function App() {
     let data
     try {
       let r
-      if (bpType === 'logpoint' || bpType === 'expression') {
+      const minHitsNum = parseInt(bpMinHits, 10)
+      const minHitsArg = Number.isInteger(minHitsNum) && minHitsNum > 0 ? minHitsNum : null
+
+      if (bpType === 'line' && (reqId || minHitsArg)) {
+        // line BP with extras: hit-count via advanced endpoint,
+        // request-ID via the dedicated conditional endpoint.
+        if (minHitsArg) {
+          r = await unwrap(debugApi.setAdvancedBreakpoint({ className: cn, lineNumber: ln, logMessage: null, condition: null, minHits: minHitsArg }))
+        } else {
+          r = await unwrap(debugApi.setConditionalBreakpoint(cn, ln, reqId, bpTriggerUrl.trim() || undefined))
+        }
+      } else if (bpType !== 'line') {
         r = await unwrap(debugApi.setAdvancedBreakpoint({ className: cn, lineNumber: ln, logMessage: logMsg || null, condition: cond || null }))
-      } else if (reqId) {
-        r = await unwrap(debugApi.setConditionalBreakpoint(cn, ln, reqId, bpTriggerUrl.trim() || undefined))
       } else {
         r = await unwrap(debugApi.setBreakpoint(cn, ln, bpTriggerUrl.trim() || undefined))
       }
@@ -1320,6 +1348,7 @@ export default function App() {
       setBpRequestId('')
       setBpLogMessage('')
       setBpCondition('')
+      setBpMinHits('')
       await refreshBreakpoints()
     } else showToast(data?.message || 'Breakpoint failed', true)
   }
@@ -2153,6 +2182,48 @@ export default function App() {
                 </button>
               </div>
             </div>
+            {connProfiles.length > 0 && (
+              <div className="input-row">
+                <label>Saved targets</label>
+                <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6 }}>
+                  <select
+                    value={selectedProfile}
+                    onChange={(e) => {
+                      setSelectedProfile(e.target.value)
+                      const p = connProfiles.find((x) => x.name === e.target.value)
+                      if (p) {
+                        setHost(p.host)
+                        setPort(p.port)
+                        setJdwpAttachProfile('custom')
+                      }
+                    }}
+                    style={{ flex: 1, minWidth: 140, padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 11 }}
+                  >
+                    <option value="">load a saved target…</option>
+                    {connProfiles.map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {p.name} — {p.host}:{p.port}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={!selectedProfile}
+                    title={`Delete '${selectedProfile || ''}'`}
+                    onClick={() => {
+                      setConnProfiles((list) => list.filter((x) => x.name !== selectedProfile))
+                      setSelectedProfile('')
+                    }}
+                  >
+                    Delete
+                  </button>
+                  <button type="button" className="btn btn-ghost" onClick={saveCurrentProfile} title="Save current host/port as a named target">
+                    Save current
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="input-row">
               <label title="Hostname or IP as seen by the Spring JDWP client JVM">JDWP host (target VM)</label>
               <input
@@ -2313,6 +2384,23 @@ export default function App() {
               </button>
               <button type="button" className="btn" disabled={!selectedThread || dbgToolbarBusy} onClick={() => step('out')}>
                 Step out
+              </button>
+              <button
+                type="button"
+                className="btn"
+                title="Rewind: pop back to the last application frame and re-run it"
+                disabled={!selectedThread || dbgToolbarBusy}
+                onClick={async () => {
+                  setDebugCmdBusy(true)
+                  try {
+                    const r = await unwrap(debugApi.resetFrame(selectedThread))
+                    showToast(r.ok && r.data?.success !== false ? `Dropped ${r.data.poppedFrames ?? ''} frame(s)` : (r.data?.message || 'Drop frame failed'), !(r.ok && r.data?.success !== false))
+                  } finally { setDebugCmdBusy(false) }
+                  await refreshFrames(selectedThread)
+                  await refreshVarsAndLoc(selectedThread)
+                }}
+              >
+                Drop frame
               </button>
               <button type="button" className="btn" disabled={!selectedThread || dbgToolbarBusy} onClick={resume}>
                 Resume
