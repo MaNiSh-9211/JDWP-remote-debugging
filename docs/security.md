@@ -16,11 +16,20 @@ JDWP remote debugging is inherently privileged: a debugger can read every variab
 
 ## Debug Client API hardening
 
-The client ships secure-by-default and hardens further with two environment variables:
+The client ships secure-by-default and hardens further with environment variables:
 
 ```bash
 # Require a bearer token on every /api call (constant-time compared):
 export JDWP_API_TOKEN="$(openssl rand -hex 32)"
+
+# Brute-force lockout: 5 failed attempts per IP in 60s -> 5-minute 429 lockout
+# (tunable: jdwp.auth.max-failures / window-ms / lockout-ms)
+
+# Restrict which JVMs the client may attach to (hosts or IPv4 CIDRs):
+export JDWP_ALLOWED_TARGETS="localhost,127.0.0.1,10.0.0.0/8"
+
+# Auto-disconnect idle JDWP sessions after N minutes (production safety; 0 = off):
+export JDWP_SESSION_IDLE_TIMEOUT_MINUTES=30
 
 # Bind beyond localhost ONLY if the token is set:
 export JDWP_SERVER_ADDRESS=0.0.0.0   # e.g. when running the client in a container
@@ -31,6 +40,16 @@ export JDWP_CORS_ALLOWED_ORIGINS="http://localhost:5177"
 
 Clients then send `X-Debug-Token: <token>` or `Authorization: Bearer <token>`.
 Only `/api/debug/ping` (a liveness check) is exempt.
+
+## Additional controls
+
+| Control | Where |
+|---|---|
+| **Audit trail** — append-only JSONL (`logs/audit.jsonl`, `jdwp.audit.file`) recording connect/disconnect/breakpoint events | client `AuditService` |
+| **Secret redaction** — JWT/JWE, AWS keys, auth headers, credential fields masked before strings reach UI/logs | client `SecretRedactor` + server `ClientSocketAppender` |
+| **Idle watchdog** — resumes suspended threads then disconnects idle sessions | client `IdleSessionWatchdog` |
+| **Git provider isolation** — tokens memory-only; HTTPS to fixed hosts only; owner/repo/branch validated before URL use | desktop `git-providers.cjs` |
+| **Read-only kubectl terminal** — subcommand allow-list, no shell, metacharacter rejection | desktop `cluster-exec.cjs` |
 
 ## Kubernetes hardening checklist
 

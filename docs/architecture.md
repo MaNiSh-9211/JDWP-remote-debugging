@@ -44,7 +44,19 @@ Key points:
 ## Design decisions
 
 - **JDI over raw JDWP packets** — type-safe, maintained by the JDK, supports stepping/watchpoints/expression evaluation without reimplementing the wire protocol.
+- **Event pump is mandatory, not optional** — JDI only applies a request's suspend policy when the debugger *reads* the `EventSet` from `VirtualMachine.eventQueue()`. The client therefore runs a dedicated pump thread (`JdwpService.startEventPump`) from attach to detach; it records hit metadata while the conditional-resume pass decides which threads stay suspended.
 - **Port-forward instead of exposing JDWP** — JDWP has no auth/TLS of its own; keeping it ClusterIP-only and tunneled on demand shrinks the attack surface to nearly zero.
+- **Generic pod forward, not demo-specific** — `pod-jdwp-forward` (Electron main process) attaches to ANY pod by name with per-port tracking, validation, and status introspection; the Kind buttons are just presets on top of the same machinery.
 - **Filter-lib as an auto-configuration** — services opt in with one Maven dependency; no code changes, no controller modifications.
 - **Two MCP servers** — local mode needs zero cluster permissions; cluster mode isolates all kubectl/fabric8 access behind one auditable service.
 - **Electron per-OS shells** — packaging quirks (paths, icons, process handling) stay isolated per platform while the renderer is shared.
+- **Git tokens never touch disk** — the Services browser sends renderer-supplied tokens to fixed HTTPS hosts (api.github.com / api.bitbucket.org) per request; owner/repo/branch names are validated before URL interpolation.
+- **Standalone log agent built by Maven** — `console-log-agent.jar` is produced by an assembly during every package; containerized targets stream logs instead via the NDJSON `ClientSocketAppender`, since local Attach API injection cannot reach them.
+
+## Reliability tooling
+
+| Script | Purpose |
+|---|---|
+| `scripts/preflight-cluster.ps1` | Run against any context before a demo: connectivity, RBAC (`auth can-i`), JDWP-ready pod detection. Read-only. |
+| `scripts/e2e-live-debug.ps1` | Full proof: kind cluster → deploy → tunnel → attach → breakpoint → non-blocking assertions. |
+| `scripts/e2e-assert-only.ps1` | Re-run just the assertions against an already-deployed cluster (revives the node if Docker killed it). |
