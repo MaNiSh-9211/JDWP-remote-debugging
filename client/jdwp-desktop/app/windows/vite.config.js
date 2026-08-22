@@ -6,15 +6,22 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rendererRoot = path.resolve(__dirname, '../shared/renderer')
 
+// Renderer sources live outside this package; every dependency must resolve
+// against THIS app's node_modules (pinned via aliases so Rollup never tries
+// to look upward from the shared directory).
+const nm = (p) => path.resolve(__dirname, 'node_modules', p)
+
 export default defineConfig({
   root: rendererRoot,
   plugins: [react()],
   base: './',
-  /** Renderer sources live outside this package; pin deps to this app’s node_modules */
   resolve: {
     modules: [path.resolve(__dirname, 'node_modules'), 'node_modules'],
     alias: {
-      '@tanstack/react-virtual': path.resolve(__dirname, 'node_modules/@tanstack/react-virtual'),
+      '@tanstack/react-virtual': nm('@tanstack/react-virtual'),
+      react: nm('react'),
+      'react-dom': nm('react-dom'),
+      'react/jsx-runtime': path.resolve(nm('react'), 'jsx-runtime.js'),
     },
   },
   server: { port: 5177, strictPort: true },
