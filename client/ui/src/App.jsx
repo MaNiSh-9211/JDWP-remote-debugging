@@ -28,8 +28,47 @@ function App() {
   const [selectedApiForBreakpoints, setSelectedApiForBreakpoints] = useState('')
   const [breakpointHit, setBreakpointHit] = useState(false)
   const [persistentClassName, setPersistentClassName] = useState('')
+  const [bpTypeUi, setBpTypeUi] = useState('line')
+  const [bpLogMsgUi, setBpLogMsgUi] = useState('')
+  const [bpCondUi, setBpCondUi] = useState('')
+  const [bpMinHitsUi, setBpMinHitsUi] = useState('')
+  const [bpMuted, setBpMuted] = useState(false)
+  const [hitTotal, setHitTotal] = useState(0)
   const processedThreadsRef = useRef(new Set()) // Track threads we've already processed
   const isProcessingBreakpointRef = useRef(false) // CRITICAL: Prevent processing multiple breakpoints
+
+  // Hit-stats polling with new-hit notifications (parity with Studio)
+  const hitStatsSeenRef = useRef({})
+  useEffect(() => {
+    if (!connected) {
+      hitStatsSeenRef.current = {}
+      return
+    }
+    const load = async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/breakpoints/hit-stats`)
+        const hits = res.data && res.data.hits ? res.data.hits : {}
+        let deltaTotal = 0
+        const deltas = []
+        for (const [id, count] of Object.entries(hits)) {
+          const before = hitStatsSeenRef.current[id] || 0
+          if (count > before) {
+            deltaTotal += count - before
+            deltas.push(`${id} +${count - before}`)
+          }
+        }
+        hitStatsSeenRef.current = { ...hits }
+        setHitTotal(Object.values(hits).reduce((a, b) => a + b, 0))
+        if (deltaTotal > 0) {
+          setMessage(`Breakpoint hit x${deltaTotal}: ${deltas.join(', ')}`)
+          setTimeout(() => setMessage(''), 4000)
+        }
+      } catch (e) { /* ignore */ }
+    }
+    load()
+    const id = setInterval(load, 4000)
+    return () => clearInterval(id)
+  }, [connected])
 
   useEffect(() => {
     checkStatus()
@@ -527,6 +566,130 @@ function App() {
     }
   }
 
+  // ---- Advanced breakpoint handlers (parity with Studio) --------------------
+  const handleToggleBp = async (id, enabled) => {
+    try {
+      await axios.post(`${API_BASE}/breakpoints/toggle`, { id, enabled })
+      await refreshBreakpoints()
+    } catch (error) {
+      setMessage('Toggle failed: ' + (error.response?.data?.message || error.message))
+    }
+  }
+
+  const handleMuteAll = async () => {
+    try {
+      const res = await axios.post(`${API_BASE}/breakpoints/mute`, null, { params: { muted: !bpMuted } })
+      setBpMuted(!!res.data.muted)
+    } catch (error) {
+      setMessage('Mute failed: ' + (error.response?.data?.message || error.message))
+    }
+  }
+
+  const handleExportBps = () => {
+    if (!breakpoints.length) return
+    const blob = new Blob([JSON.stringify(breakpoints, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `jdwp-breakpoints-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files && e.target.files[0]
+    e.target.value = ''
+    if (!file) return
+    let list
+    try { list = JSON.parse(await file.text()) } catch { setMessage('Invalid JSON'); return }
+    if (!Array.isArray(list)) { setMessage('Expected a breakpoints JSON array'); return }
+    let okCount = 0
+    for (const bp of list) {
+      const id = String(bp.id || bp.location || '')
+      const idx = id.lastIndexOf(':')
+      if (idx < 0) continue
+      const cn = id.slice(0, idx).replace(/\$\d+$/, '')
+      const ln = parseInt(id.slice(idx + 1), 10)
+      if (!cn || Number.isNaN(ln)) continue
+      try {
+        if (bp.logMessage || bp.condition || bp.minHits != null) {
+          await axios.post(`${API_BASE}/breakpoints/advanced`, {
+            className: cn, lineNumber: ln,
+            logMessage: bp.logMessage || null,
+            condition: bp.condition || null,
+            minHits: bp.minHits != null ? Number(bp.minHits) : null,
+          })
+        } else {
+          await axios.post(`${API_BASE}/breakpoints`, null, { params: { className: cn, lineNumber: ln } })
+        }
+        okCount++
+      } catch { /* skip bad entries */ }
+    }
+    await refreshBreakpoints()
+    setMessage(`Imported ${okCount}/${list.length} breakpoint(s)`)
+    setTimeout(() => setMessage(''), 4000)
+  }
+
+  /** Route single-add by type: line / logpoint / expression / request */
+  const handleSingleAdd = async () => {
+    const className = (persistentClassName || document.getElementById('bp-class')?.value || '').trim()
+    const lineStr = (document.getElementById('bp-line')?.value || '').trim()
+    const logMsg = (document.getElementById('bp-logmsg')?.value || '').trim()
+    const cond = (document.getElementById('bp-cond')?.value || '').trim()
+    const minHitsStr = (document.getElementById('bp-minhits')?.value || '').trim()
+    const reqId = (document.getElementById('bp-request-id')?.value || '').trim()
+
+    if (!className || !className.includes('.')) {
+      setMessage('Enter the full class name, e.g. com.jdwp.server.controller.UserController')
+      setTimeout(() => setMessage(''), 4000)
+      return
+    }
+    const lineNumber = parseInt(lineStr, 10)
+    if (Number.isNaN(lineNumber)) {
+      setMessage('Enter a valid line number')
+      setTimeout(() => setMessage(''), 3000)
+      return
+    }
+
+    try {
+      let res
+      if (bpTypeUi === 'logpoint') {
+        if (!logMsg) { setMessage('Log message required for a logpoint'); return }
+        res = await axios.post(`${API_BASE}/breakpoints/advanced`, { className, lineNumber, logMessage: logMsg, condition: cond || null })
+        addLog('action', `Logpoint at ${className}:${lineNumber}`, res.data)
+      } else if (bpTypeUi === 'expression') {
+        if (!cond) { setMessage('Condition expression required'); return }
+        res = await axios.post(`${API_BASE}/breakpoints/advanced`, { className, lineNumber, condition: cond })
+        addLog('action', `Expression BP at ${className}:${lineNumber} [${cond}]`, res.data)
+      } else if (bpTypeUi === 'request') {
+        if (!reqId) { setMessage('Request ID required for request-scoped BP'); return }
+        res = await axios.post(`${API_BASE}/breakpoints/conditional`, null, { params: { className, lineNumber, targetRequestId: reqId } })
+        addLog('action', `Request-scoped BP at ${className}:${lineNumber}`, res.data)
+      } else if (minHitsStr) {
+        res = await axios.post(`${API_BASE}/breakpoints/advanced`, { className, lineNumber, minHits: parseInt(minHitsStr, 10) })
+        addLog('action', `Hit-count BP at ${className}:${lineNumber} (after ${minHitsStr})`, res.data)
+      } else {
+        res = await axios.post(`${API_BASE}/breakpoints`, null, { params: { className, lineNumber } })
+        addLog('action', `Breakpoint at ${className}:${lineNumber}`, res.data)
+      }
+      if (res.data.success === false) throw new Error(res.data.message || 'failed')
+      await refreshBreakpoints()
+      setMessage(`✓ Breakpoint set at ${className}:${lineNumber}`)
+      setTimeout(() => setMessage(''), 3000)
+    } catch (error) {
+      const msg = error.response?.data?.message || error.message
+      setMessage('✗ ' + msg)
+      addLog('error', 'Add breakpoint failed', msg)
+    }
+  }
+
+  const minHitsPresent = () => {
+    const v = (document.getElementById('bp-minhits')?.value || '').trim()
+    return v !== '' && parseInt(v, 10) > 0
+  }
+
   const handleSetBreakpoint = async (className, lineNumbersStr) => {
     // Validate and clean class name
     const cleanClassName = className.trim()
@@ -857,6 +1020,22 @@ function App() {
             >
               ▶ Continue (F5)
             </button>
+            <button
+              onClick={async () => {
+                try {
+                  const res = await axios.post(`${API_BASE}/threads/${encodeURIComponent(selectedThread)}/reset-frame`)
+                  setMessage(`Dropped ${res.data.poppedFrames ?? ''} frame(s) — rewound to last app frame`)
+                  await handleThreadClick(selectedThread)
+                } catch (error) {
+                  setMessage('Drop frame failed: ' + (error.response?.data?.message || error.message))
+                  setTimeout(() => setMessage(''), 4000)
+                }
+              }}
+              className="debug-btn"
+              title="Rewind: pop back to the last application frame and re-run it"
+            >
+              ↩ Drop Frame
+            </button>
           </div>
         </div>
       )}
@@ -932,28 +1111,71 @@ function App() {
               </div>
               
               <div className="breakpoint-list">
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                  <button onClick={handleMuteAll} disabled={!connected} className="remove-btn" style={{ flex: 1, background: bpMuted ? '#4ec9b0' : '#3c3c3c' }}>
+                    {bpMuted ? 'Unmute all' : 'Mute all'}
+                  </button>
+                  <button onClick={handleExportBps} disabled={!breakpoints.length} className="remove-btn" style={{ flex: 1 }} title="Download breakpoints as JSON">
+                    Export
+                  </button>
+                  <label className="remove-btn" style={{ flex: 1, cursor: 'pointer', textAlign: 'center' }} title="Import breakpoints JSON">
+                    Import
+                    <input
+                      ref={importFileRef}
+                      type="file"
+                      accept=".json,application/json"
+                      style={{ display: 'none' }}
+                      onChange={handleImportFile}
+                    />
+                  </label>
+                </div>
                 {breakpoints.length === 0 ? (
                   <div className="info-text">No breakpoints set</div>
                 ) : (
-                  breakpoints.map((bp, idx) => (
-                    <div key={idx} className="breakpoint-item">
-                      <span className="breakpoint-location">{bp.location}</span>
-                      <button
-                        onClick={() => handleRemoveBreakpoint(bp.id)}
-                        className="remove-btn"
-                        title="Remove this breakpoint"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))
+                  breakpoints.map((bp) => {
+                    const off = bp.disabled
+                    return (
+                      <div key={bp.id || bp.location} className="breakpoint-item" style={{ opacity: off ? 0.45 : 1 }}>
+                        <span className="breakpoint-location">
+                          {bp.logMessage ? `📝 ${bp.location}` : bp.condition ? `❓ ${bp.location}` : bp.location}
+                          {bp.logMessage && <span style={{ color: '#858585' }}> · {bp.logMessage}</span>}
+                          {bp.condition && <span style={{ color: '#858585' }}> · if {bp.condition}</span>}
+                          {bp.minHits != null && <span style={{ color: '#858585' }}> · after {bp.minHits}</span>}
+                        </span>
+                        <button
+                          onClick={() => handleToggleBp(bp.id, !!off)}
+                          className="remove-btn"
+                          title={off ? 'Enable' : 'Disable'}
+                        >
+                          {off ? '◌' : '⏻'}
+                        </button>
+                        <button
+                          onClick={() => handleRemoveBreakpoint(bp.id)}
+                          className="remove-btn"
+                          title="Remove this breakpoint"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )
+                  })
                 )}
               </div>
               
               <div className="add-breakpoint">
                 <h3 style={{ margin: '0.5rem 0', color: '#4ec9b0', fontSize: '0.95rem' }}>
-                  ➕ Add Single Breakpoint:
+                  ➕ Add Breakpoint:
                 </h3>
+                <select
+                  value={bpTypeUi}
+                  onChange={(e) => setBpTypeUi(e.target.value)}
+                  style={{ marginBottom: '0.5rem', padding: '0.5rem', borderRadius: 4, background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #3c3c3c' }}
+                >
+                  <option value="line">Line (suspend)</option>
+                  <option value="logpoint">Logpoint (trace, no pause)</option>
+                  <option value="expression">Expression condition</option>
+                  <option value="request">Request-ID scoped</option>
+                </select>
                 <input
                   type="text"
                   id="bp-class"
@@ -964,52 +1186,42 @@ function App() {
                 <input
                   type="text"
                   id="bp-line"
-                  placeholder="Line number(s) - e.g., 31 or 31,32,33"
+                  placeholder="Line number - e.g., 31"
                 />
-                <input
-                  type="text"
-                  id="bp-request-id"
-                  placeholder="Request ID (optional — conditional: only suspends requests with this X-Debug-Request-Id)"
-                />
-                <button
-                  onClick={() => {
-                    // Get class name from state (persistent) or input field
-                    const className = (persistentClassName || document.getElementById('bp-class')?.value || '').trim()
-                    const lineNumbers = (document.getElementById('bp-line')?.value || '').trim()
-                    
-                    if (!className) {
-                      setMessage('✗ Please enter a class name (e.g., com.jdwp.server.controller.UserController)')
-                      setTimeout(() => setMessage(''), 5000)
-                      addLog('error', 'Missing Class Name', { 
-                        hint: 'Enter full class name like: com.jdwp.server.controller.UserController'
-                      })
-                      return
-                    }
-                    
-                    if (!lineNumbers) {
-                      setMessage('✗ Please enter line number(s) (e.g., 31 or 31,32,33)')
-                      setTimeout(() => setMessage(''), 3000)
-                      return
-                    }
-                    
-                    // Validate class name format - must be full class name, not package
-                    if (className.includes('package ') || 
-                        className.endsWith('.controller') || 
-                        className.endsWith('.service') || 
-                        !className.includes('.')) {
-                      setMessage('✗ Invalid class name. Use full class name like: com.jdwp.server.controller.UserController')
-                      setTimeout(() => setMessage(''), 5000)
-                      addLog('error', 'Invalid Class Name Format', { 
-                        provided: className,
-                        hint: 'Use full class name like: com.jdwp.server.controller.UserController (not just package name)'
-                      })
-                      return
-                    }
-                    
-                    handleSetBreakpoint(className, lineNumbers)
-                  }}
-                >
-                  Add Breakpoint(s)
+                {bpTypeUi === 'logpoint' && (
+                  <input
+                    type="text"
+                    id="bp-logmsg"
+                    placeholder='Log message with {var} tokens - e.g., "order {id} amount={amount}"'
+                  />
+                )}
+                {(bpTypeUi === 'expression' || bpTypeUi === 'logpoint') && (
+                  <input
+                    type="text"
+                    id="bp-cond"
+                    placeholder={bpTypeUi === 'logpoint' ? 'Condition (optional) - log only when true, e.g. amount > 1000' : 'Condition - e.g. a > 10 && status == "ok"'}
+                  />
+                )}
+                {bpTypeUi === 'request' && (
+                  <input
+                    type="text"
+                    id="bp-request-id"
+                    placeholder="X-Debug-Request-Id value to scope suspension"
+                  />
+                )}
+                {bpTypeUi === 'line' && (
+                  <input
+                    type="text"
+                    id="bp-minhits"
+                    placeholder="Break after N hits (optional)"
+                  />
+                )}
+                <button onClick={handleSingleAdd}>
+                  {bpTypeUi === 'logpoint' ? 'Add Logpoint'
+                    : bpTypeUi === 'expression' ? 'Add Expression BP'
+                    : bpTypeUi === 'request' ? 'Add Request-Scoped BP'
+                    : minHitsPresent() ? `Add Hit-Count BP`
+                    : 'Add Line Breakpoint'}
                 </button>
               </div>
             </div>
