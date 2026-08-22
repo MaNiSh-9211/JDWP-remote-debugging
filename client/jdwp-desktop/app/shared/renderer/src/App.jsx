@@ -981,7 +981,9 @@ export default function App() {
       const res = await electron.gitListRepos({
         provider: gitProvider,
         token: gitToken.trim(),
-        owner: gitOwner.trim(),
+        // GitHub: empty owner = everything the token can reach (orgs included).
+        // Bitbucket requires a workspace, so only pass it there.
+        owner: gitProvider === 'bitbucket' ? gitOwner.trim() : '',
       })
       if (res?.ok) {
         setGitRepos(res.repos)
@@ -2507,11 +2509,6 @@ export default function App() {
               )}
             </div>
             <div className="panel-body cluster-panel__body">
-              <p className="cluster-panel__intro">
-                These settings drive <strong>everything</strong> below: the kubectl shell, the one-click Kind debug
-                buttons, and port-forwards. Contexts are discovered from your local kubeconfig via{' '}
-                <code>kubectl config get-contexts</code>.
-              </p>
               {kubeContextError && kubeContextList.length === 0 && (
                 <div className="cluster-panel__snippet" style={{ color: 'var(--text-muted)' }}>
                   <span className="cluster-panel__snippet-label">kubectl discovery</span>
@@ -2562,8 +2559,7 @@ export default function App() {
               />
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
                 <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: 11, marginBottom: 6 }}>
-                  Services — connect GitHub or Bitbucket to list your repositories and jump straight to their running
-                  pods. Tokens are read-only scope, kept in memory only, never persisted.
+                  Services — repos from GitHub / Bitbucket, matched to running pods
                 </label>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                   <select
@@ -2582,26 +2578,17 @@ export default function App() {
                       style={{ width: 130, padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 11 }}
                     />
                   )}
-                  {!gitProvider && gitProvider === 'github' && null}
                   <input
                     type="password"
                     value={gitToken}
                     onChange={(e) => setGitToken(e.target.value)}
-                    placeholder={gitProvider === 'bitbucket' ? 'Bitbucket access token' : 'GitHub token (repo:read)'}
+                    placeholder={gitProvider === 'bitbucket' ? 'access token' : 'token (read-only)'}
                     style={{ flex: 1, minWidth: 180, padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: 11 }}
                   />
                   <button type="button" className="btn" disabled={gitLoading} onClick={loadServices}>
                     {gitLoading ? 'Loading…' : 'Load services'}
                   </button>
                 </div>
-                {gitProvider === 'github' && (
-                  <input
-                    value={gitOwner}
-                    onChange={(e) => setGitOwner(e.target.value)}
-                    placeholder="optional — narrow to an org/user (default: everything the token can see)"
-                    style={{ width: '100%', marginTop: 6, padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 11 }}
-                  />
-                )}
                 {gitError && (
                   <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>{gitError}</div>
                 )}
@@ -2716,8 +2703,7 @@ export default function App() {
               </div>
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
                 <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: 11, marginBottom: 6 }}>
-                  Attach to any pod — discover pods in the namespace above, forward its JDWP port to localhost:5005
-                  and attach.
+                  Attach to any pod (JDWP → localhost:5005)
                 </label>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                   <button type="button" className="btn btn-ghost" style={{ fontSize: 10 }} onClick={discoverPods}>
@@ -2781,8 +2767,8 @@ export default function App() {
                   </div>
                 )}
               </div>
-              <div className="input-row" style={{ marginTop: 12 }}>
-                <label>Notes (service names, agent flags, team links)</label>
+              <details style={{ marginTop: 12 }}>
+                <summary style={{ cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11 }}>Notes</summary>
                 <textarea
                   value={k8sNotes}
                   onChange={(e) => setK8sNotes(e.target.value)}
@@ -2800,7 +2786,7 @@ export default function App() {
                     resize: 'vertical',
                   }}
                 />
-              </div>
+              </details>
             </div>
           </section>
             )}
