@@ -12,7 +12,7 @@
 # Usage:   powershell -ExecutionPolicy Bypass -File scripts/e2e-live-debug.ps1
 # Needs:   Docker, kubectl, JDK 21+, Maven (kind is downloaded automatically)
 # =============================================================================
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $repo = Split-Path $PSScriptRoot -Parent
 Set-Location $repo
 
@@ -41,20 +41,26 @@ if ($LASTEXITCODE -ne 0 -or (& $kindExe get clusters) -notcontains "jdwp-demo") 
 # --- 2. Deploy debuggable pods ------------------------------------------------
 Write-Host "[2] Building + loading demo image, deploying pods..." -ForegroundColor Cyan
 docker compose build debug-server 2>&1 | Out-Null
-docker tag jdwp-remote-debugging-ip-final-debug-server:latest jdwp-debug-server:local 2>$null
-if ($LASTEXITCODE -ne 0) { docker tag jdwp-debug-server:local jdwp-debug-server:local }
+# compose tags the build as ghcr.io/...:latest (see docker-compose.yml image:)
+docker tag ghcr.io/manish-9211/jdwp-debug-server:latest jdwp-debug-server:local
+if ($LASTEXITCODE -ne 0) { & $fail "demo image not built — run 'docker compose build debug-server'" }
 & $kindExe load docker-image jdwp-debug-server:local --name jdwp-demo 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { & $fail "kind load failed" }
 kubectl config use-context kind-jdwp-demo | Out-Null
 kubectl apply -f k8s/kind-jdwp-demo/install.yaml | Out-Null
-kubectl wait -n jdwp-demo --for=condition=available deployment/jdwp-demo-a --timeout=300s | Out-Null
-kubectl wait -n jdwp-demo --for=condition=available deployment/jdwp-demo-b --timeout=300s | Out-Null
+$wait = kubectl wait -n jdwp-demo --for=condition=available deployment/jdwp-demo-a --timeout=300s 2>&1
+if ($LASTEXITCODE -ne 0) { & $fail "pod A never became available: $wait" }
+kubectl wait -n jdwp-demo --for=condition=available deployment/jdwp-demo-b --timeout=120s | Out-Null
 $pods = kubectl get pods -n jdwp-demo --no-headers 2>$null
 $podA = ($pods | Where-Object { $_ -match 'jdwp-demo-a' }).Split(' ')[0]
 if (-not $podA) { & $fail "demo pod A not found" }
 Write-Host "    pod A: $podA" -ForegroundColor Gray
-& $pass "pods Running in live cluster"
 
 # --- 3. Forward JDWP from the pod --------------------------------------------
+# Free host port 5005 first so we cannot accidentally attach to some other JVM.
+Get-NetTCPConnection -LocalPort 5005 -State Listen -ErrorAction SilentlyContinue |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 1
 Write-Host "[3] kubectl port-forward $podA 5005:5005 ..." -ForegroundColor Cyan
 $pf = Start-Process kubectl -ArgumentList "--context","kind-jdwp-demo","-n","jdwp-demo","port-forward","pod/$podA","5005:5005" -WindowStyle Hidden -PassThru
 Start-Sleep -Seconds 4

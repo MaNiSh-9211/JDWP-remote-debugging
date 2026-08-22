@@ -1,6 +1,6 @@
 # One-shot: download kind (if missing), create cluster, build demo image, load, deploy two pods.
 # Run from repo root:  powershell -ExecutionPolicy Bypass -File scripts/bootstrap-kind-demo.ps1
-$ErrorActionPreference = "Stop"
+# PS5.1 turns native stderr (kind/kubectl warnings) into errors under "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 if (-not (Test-Path (Join-Path $repo "docker-compose.yml"))) {
   throw "Run this script from the repo (docker-compose.yml not found above scripts/)."
@@ -28,8 +28,8 @@ if ($clusters -notmatch "jdwp-demo") {
 
 Write-Host "Building debug-server..."
 docker compose build debug-server
-$img = (docker images --format "{{.Repository}}:{{.Tag}}" | Select-String "debug-server" | Select-Object -First 1).ToString().Trim()
-docker tag $img jdwp-debug-server:local
+# compose tags builds as ghcr.io/manish-9211/jdwp-debug-server:latest
+docker tag ghcr.io/manish-9211/jdwp-debug-server:latest jdwp-debug-server:local
 Write-Host "Loading image into kind..."
 & $kindExe load docker-image jdwp-debug-server:local --name jdwp-demo
 
