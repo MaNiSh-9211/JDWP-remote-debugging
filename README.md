@@ -55,9 +55,10 @@ Most debuggers force an ugly trade-off in production: either you don't debug at 
 - **Full debugger feature set** — breakpoints (line + exception), step over/into/out, continue, stack frames, deep variable inspection, expression evaluation.
 - **Live log capture** — a tiny javaagent is injected into the target JVM on attach; application logs stream back to the UI over SSE, no restart needed.
 - **Kubernetes-native sessions** — pod discovery by label, port-forward lifecycle management, session timeouts, and audit logging built into the in-cluster debugger.
+- **Services browser (GitHub & Bitbucket)** — connect a read-only token (kept in memory only), list every repository you have access to (orgs included), pick branches, shallow-clone straight into the built-in source view, and jump to matching running pods in your cluster.
 - **JDWP Studio desktop app** — cross-platform Electron shell (Windows/macOS/Linux) with source view, variable tree, HTTP replay drawer, and a kubectl terminal that only allows read-only commands.
 - **AI-ready via MCP** — two MCP servers: one for local/JDWP workflows (37 tools), one Kubernetes-aware (32 tools: pods, tunnels, sessions).
-- **Security-first defaults** — API token auth, localhost binding, locked-down CORS, least-privilege RBAC (no exec, no write verbs), constant-time token comparison.
+- **Security-first defaults** — API token auth with brute-force lockout, JDWP target allow-list, idle-session auto-disconnect, localhost binding, locked-down CORS, least-privilege RBAC (no exec, no write verbs), secret redaction in logs/variables, and a full audit trail.
 
 ## Repository layout
 
@@ -79,6 +80,25 @@ Most debuggers force an ugly trade-off in production: either you don't debug at 
 ├── scripts/                    # Kind demo bootstrap + port-forward helpers
 ├── k8s/kind-jdwp-demo/         # One-command Kind demo cluster
 └── docs/                       # Architecture, security model, production guide
+```
+
+## Download
+
+Prebuilt artifacts ship with every release — no build needed:
+
+| Asset | Use |
+|---|---|
+| `JDWP.Studio.Setup.*.exe` | Windows installer |
+| `JDWP.Studio-*-*.dmg` | macOS app |
+| `JDWP.Studio.*.AppImage` | Linux app |
+| `debug-client-1.0.0.jar` | The debug client (run `java -jar`, needs JDK 21+) |
+| `console-log-agent.jar` | Standalone log-capture agent for local JVMs |
+
+Container images are published on GHCR:
+
+```bash
+# demo debug target
+docker run -p 8081:8081 -p 5005:5005 ghcr.io/manish-9211/jdwp-debug-server:latest
 ```
 
 ## Prove it yourself (live cluster, one command)

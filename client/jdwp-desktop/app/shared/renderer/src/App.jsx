@@ -1009,6 +1009,68 @@ export default function App() {
     [debugSelectedPod],
   )
 
+  // ---- Branch discovery for the selected service ---------------------------
+  const [serviceBranches, setServiceBranches] = useState([]) // {name,isDefault,protected}
+  const [branchesLoading, setBranchesLoading] = useState(false)
+  const [branchesError, setBranchesError] = useState(null)
+  const [selectedBranch, setSelectedBranch] = useState('')
+  const [cloningService, setCloningService] = useState(false)
+  // Full record of the selected repo (cloneUrl etc.) kept in memory.
+  const selectedRepoRecord = gitRepos.find((r) => r.name === selectedService) || null
+
+  const selectService = useCallback(async (repoName) => {
+    if (!repoName) return
+    setSelectedService(repoName)
+    setServiceBranches([])
+    setBranchesError(null)
+    setSelectedBranch('')
+    discoverPods()
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.gitListBranches) return
+    setBranchesLoading(true)
+    try {
+      const res = await electron.gitListBranches({
+        provider: gitProvider,
+        token: gitToken.trim(),
+        owner: gitOwner.trim(),
+        repo: repoName,
+      })
+      if (res?.ok) {
+        setServiceBranches(res.branches)
+        const def = res.branches.find((b) => b.isDefault) || res.branches[0]
+        if (def) setSelectedBranch(def.name)
+      } else {
+        setBranchesError(res?.error || 'Failed to list branches')
+      }
+    } finally {
+      setBranchesLoading(false)
+    }
+  }, [gitProvider, gitToken, gitOwner, discoverPods])
+
+  const cloneSelectedService = useCallback(async () => {
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!electron?.gitCloneRepo || !selectedRepoRecord) return
+    setCloningService(true)
+    try {
+      const res = await electron.gitCloneRepo({
+        url: selectedRepoRecord.cloneUrl,
+        branch: selectedBranch.trim() || undefined,
+      })
+      if (res?.ok) {
+        showToast(`Cloned ${selectedRepoRecord.name} (${selectedBranch}) → ${res.path}`)
+        pushActivity(`Cloned ${selectedRepoRecord.name}@${selectedBranch}`)
+        if (setSourceRoot && res.path) {
+          setSourceRoot(res.path)
+          setActiveNav('source')
+        }
+      } else {
+        showToast(res?.error || 'Clone failed', true)
+      }
+    } finally {
+      setCloningService(false)
+    }
+  }, [selectedRepoRecord, selectedBranch, showToast, pushActivity, setSourceRoot])
+
   // Read-only pod logs via the allow-listed kubectl shell.
   const [podLogs, setPodLogs] = useState(null) // { pod, text }
   const [podLogsLoading, setPodLogsLoading] = useState(false)
@@ -2566,7 +2628,7 @@ export default function App() {
                               fontWeight: selectedService === r.name ? 700 : 400,
                               border: selectedService === r.name ? '1px solid var(--accent, #58a6ff)' : 'none',
                             }}
-                            onClick={() => { setSelectedService(r.name); discoverPods() }}
+                            onClick={() => { selectService(r.name) }}
                           >
                             {r.name}{r.private ? ' 🔒' : ''}
                           </button>
@@ -2576,6 +2638,46 @@ export default function App() {
                 )}
                 {selectedService && (
                   <div style={{ marginTop: 8 }}>
+                    {branchesLoading && <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>loading branches…</div>}
+                    {branchesError && (
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>branches: {branchesError}</div>
+                    )}
+                    {!branchesLoading && serviceBranches.length > 0 && (
+                      <div className="input-row">
+                        <label>Branch</label>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <select
+                            value={selectedBranch}
+                            onChange={(e) => setSelectedBranch(e.target.value)}
+                            style={{
+                              flex: 1,
+                              padding: 6,
+                              borderRadius: 8,
+                              border: '1px solid var(--border)',
+                              background: 'var(--bg-deep)',
+                              color: 'var(--text)',
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: 11,
+                            }}
+                          >
+                            {serviceBranches.map((b) => (
+                              <option key={b.name} value={b.name}>
+                                {b.name}{b.isDefault ? ' (default)' : ''}{b.protected ? ' 🔒' : ''}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            disabled={cloningService}
+                            title="Shallow-clone this branch and open it in the Source view"
+                            onClick={cloneSelectedService}
+                          >
+                            {cloningService ? 'Cloning…' : 'Clone & open source'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     <div style={{ fontSize: 11, color: 'var(--text)', marginBottom: 4 }}>
                       Pods matching <code>{selectedService}</code> in namespace <code>{k8sNamespace}</code>:
                     </div>

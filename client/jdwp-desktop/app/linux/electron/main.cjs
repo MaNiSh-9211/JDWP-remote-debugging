@@ -326,7 +326,15 @@ ipcMain.handle('git-clone-repo', async (_, payload) => {
     dest = path.join(parent, `${safeBase}-${n}`)
   }
   return await new Promise((resolve) => {
-    const proc = spawn('git', ['clone', '--depth', '1', '--', url, dest], {
+    const branch = String(payload?.branch || '').trim()
+  // Branch names allow slashes (feature/x) but never shell-hostile or option-leading chars.
+  if (branch && (!/^[\w][\w./-]{0,200}$/.test(branch) || branch.includes('..'))) {
+    return { ok: false, error: 'Invalid branch name' }
+  }
+  const cloneArgs = ['clone', '--depth', '1']
+  if (branch) cloneArgs.push('--branch', branch)
+  cloneArgs.push('--', url, dest)
+  const proc = spawn('git', cloneArgs, {
       cwd: parent,
       shell: false,
     })
