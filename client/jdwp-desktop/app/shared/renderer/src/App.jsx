@@ -2035,16 +2035,13 @@ export default function App() {
           >
             {activeNav === 'session' && (
         <section className="panel panel--page">
-          <div className="panel-header">Session — client vs target VM</div>
+          <div className="panel-header">Session</div>
           <div className="panel-body">
             <div className="panel-header" style={{ fontSize: 12, marginTop: 0, paddingTop: 0 }}>
-              1. Spring debug client (HTTP)
+              1. Debug client
             </div>
-            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '0 0 8px' }}>
-              JDWP Studio talks to this service first (default <code>http://localhost:8083</code>). Use <strong>Settings → API</strong> if it differs.
-            </p>
             <div className="input-row">
-              <label>Current API base</label>
+              <label>API base</label>
               <input value={getApiBase()} readOnly disabled style={{ opacity: 0.85 }} />
             </div>
             <div className="toolbar">
@@ -2057,15 +2054,10 @@ export default function App() {
               className="panel-header"
               style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10, fontSize: 12 }}
             >
-              2. Target JVM (JDWP attach)
+              2. Target VM (JDWP attach)
             </div>
-            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '0 0 8px' }}>
-              The <strong>target VM</strong> pill stays offline until you attach here. The host is resolved from the <em>Spring client process</em>{' '}
-              (not from Electron): use <code>localhost</code> when the client runs on your PC and JDWP is port-forwarded or published; use{' '}
-              <code>debug-server</code> when the Spring client runs inside the same Docker Compose network as the demo app.
-            </p>
             <div className="input-row">
-              <label>Local / Docker / K8s preset</label>
+              <label>Preset</label>
               <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6 }}>
                 <button
                   type="button"
@@ -2154,55 +2146,63 @@ export default function App() {
                 Detach
               </button>
             </div>
-            <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '8px 0 0', lineHeight: 1.45 }}>
-              <strong>Kind (2 pods):</strong> create cluster with{' '}
-              <code style={{ fontSize: 9 }}>kind-cluster.yaml</code> → HTTP on host <code style={{ fontSize: 9 }}>9081</code> /{' '}
-              <code style={{ fontSize: 9 }}>9082</code> (avoids Windows port 8081 blocks); run <code style={{ fontSize: 9 }}>scripts/kind-jdwp-forward-jdwp.ps1</code> (or{' '}
-              <code style={{ fontSize: 9 }}>.sh</code>) for JDWP <code style={{ fontSize: 9 }}>5005</code> / <code style={{ fontSize: 9 }}>5006</code>. Details:{' '}
-              <code style={{ fontSize: 9 }}>k8s/kind-jdwp-demo/README.md</code>.
-            </p>
             {typeof window !== 'undefined' && window.jdwpElectron?.kindJdwpForward ? (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
                 <div className="panel-header" style={{ fontSize: 12, marginTop: 0, paddingTop: 0 }}>
-                  3. Kind — debug from this app (Electron)
+                  3. Kind pods
                 </div>
-                <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 8px', lineHeight: 1.45 }}>
-                  Starts <code>kubectl port-forward</code> on <strong>this PC</strong> (JDWP → <code>localhost:5005</code>), points the Spring client’s HTTP proxy at{' '}
-                  <code>9081</code> or <code>9082</code>, then attaches using the <strong>JDWP host/port fields above</strong> (as seen by the Spring JVM). If the client runs in{' '}
-                  <strong>Docker Desktop</strong>, set JDWP host to <code>host.docker.internal</code> — <code>localhost</code> there is the container, not your PC, and attach often fails with a handshake/socket error while ping still works.
-                </p>
                 <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6 }}>
-                  <button type="button" className="btn btn-primary" disabled={busy} onClick={() => debugKindPodAuto('a')}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={busy}
+                    onClick={() => debugKindPodAuto('a')}
+                    title="Port-forward pod A JDWP to localhost:5005, proxy demo HTTP to :9081, attach"
+                  >
                     Debug Kind pod A
                   </button>
-                  <button type="button" className="btn btn-primary" disabled={busy} onClick={() => debugKindPodAuto('b')}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={busy}
+                    onClick={() => debugKindPodAuto('b')}
+                    title="Pod B → JDWP localhost:5006, HTTP :9082, attach"
+                  >
                     Debug Kind pod B
                   </button>
                   <button type="button" className="btn" disabled={busy} onClick={stopKindJdwpForward}>
-                    Stop Kind JDWP forward
+                    Stop forward
                   </button>
                 </div>
               </div>
             ) : null}
-            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '8px 0 0' }}>
-              <strong>Client API</strong> {clientApiReachable ? 'reachable' : 'unreachable'} — top bar “Client API” matches this ping/status.
-              <br />
-              <strong>Target VM</strong> {connected ? 'attached' : 'not attached'} — JVM under debug (JDWP). Demo HTTP is proxied via the client to{' '}
-              <code style={{ fontSize: 10 }}>{demoAppBaseHint}</code>.
-            </p>
             {vmDescription ? (
-              <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '4px 0 0', wordBreak: 'break-all' }} title={vmDescription}>
-                {vmDescription}
+              <p
+                style={{
+                  fontSize: 10,
+                  color: 'var(--text-muted)',
+                  margin: '8px 0 0',
+                  wordBreak: 'break-all',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+                title={vmDescription}
+              >
+                {vmDescription.split('\n').filter(Boolean).pop()}
               </p>
             ) : null}
             <div className="panel-header" style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-              Seed breakpoints (demo)
+              Seed breakpoints
             </div>
-            <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px' }}>
-              Per-request suspend: send <code>X-Debug-Request-Id</code> on HTTP probe (or conditional breakpoint). Other requests auto-resume.
-            </p>
             <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6 }}>
-              <button type="button" className="btn btn-primary" disabled={busy || !connected} onClick={seedBreakpointsFromApi}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy || !connected}
+                onClick={seedBreakpointsFromApi}
+                title="Set the demo breakpoints list from the client's API config"
+              >
                 Seed from API
               </button>
               <button type="button" className="btn" disabled={busy || !connected} onClick={seedBreakpointsFromPath}>
