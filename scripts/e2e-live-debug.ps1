@@ -68,6 +68,18 @@ Start-Sleep -Seconds 4
 try {
   # --- 4. Attach debugger through the tunnel ---------------------------------
   Write-Host "[4] Attaching JDWP debugger through the tunnel..." -ForegroundColor Cyan
+  # Start the debug client if it is not running.
+  $ping = $null
+  try { $ping = Invoke-RestMethod "http://localhost:8083/api/debug/ping" -TimeoutSec 2 } catch {}
+  if (-not ($ping -and $ping.ok)) {
+    Write-Host "    starting debug client..." -ForegroundColor Gray
+    $jar = Join-Path $repo "client\target\debug-client-1.0.0.jar"
+    if (-not (Test-Path $jar)) { & $fail "debug-client JAR missing - run 'mvn package' in client/" }
+    Start-Process java -ArgumentList "-jar", $jar -WorkingDirectory (Join-Path $repo "client") -WindowStyle Hidden
+    $deadline = (Get-Date).AddSeconds(60)
+    do { Start-Sleep 3; try { $ping = Invoke-RestMethod "http://localhost:8083/api/debug/ping" -TimeoutSec 2 } catch { $ping = $null } } until (($ping -and $ping.ok) -or ((Get-Date) -gt $deadline))
+    if (-not ($ping -and $ping.ok)) { & $fail "debug client did not start" }
+  }
   $c = Invoke-RestMethod -Method Post -Uri "http://localhost:8083/api/debug/connect?host=localhost&port=5005" -TimeoutSec 30
   if (-not $c.success) { & $fail "debugger did not attach to pod A" }
   & $pass "debugger attached to JVM inside pod A"
