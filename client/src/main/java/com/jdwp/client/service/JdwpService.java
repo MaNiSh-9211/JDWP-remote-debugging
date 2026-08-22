@@ -54,6 +54,16 @@ public class JdwpService {
 
     @Autowired(required = false)
     private com.jdwp.client.service.LogReceiverService logReceiverService;
+
+    @Autowired(required = false)
+    private com.jdwp.client.security.AuditService auditService;
+
+    /** Fire-and-forget audit event (no-op when the audit service is absent). */
+    private void audit(String action, Map<String, ?> detail) {
+        if (auditService != null) {
+            auditService.log(action, detail);
+        }
+    }
     
     private static final int CONNECT_RETRIES = 3;
     private static final long CONNECT_RETRY_DELAY_MS = 2500;
@@ -136,6 +146,7 @@ public class JdwpService {
             logger.info("[JDWP CLIENT] VM Description: {}", vm.description());
             sessionTargetHost = host;
             sessionTargetPort = port;
+            audit("connect", Map.of("host", host, "port", port));
             
             // Set VM reference for log receiver
             if (logReceiverService != null) {
@@ -223,6 +234,7 @@ public class JdwpService {
     
     public synchronized void disconnect() {
         logger.info("[JDWP CLIENT] Disconnecting from JDWP server...");
+        audit("disconnect", Map.of("host", sessionTargetHost, "port", sessionTargetPort));
         stopEventPump();
         if (vm != null) {
             try {
@@ -547,6 +559,7 @@ public class JdwpService {
             
             String bpId = className + ":" + lineNumber;
             breakpoints.put(bpId, bpRequest);
+            audit("set-breakpoint", Map.of("breakpoint", bpId, "conditional", conditionalBreakpoints.containsKey(bpId)));
             startConditionalResumeThreadIfNeeded(); // so regular breakpoints auto-resume when no debug header
             logger.info("[JDWP CLIENT] ✓✓✓ BREAKPOINT SET SUCCESSFULLY");
             logger.info("[JDWP CLIENT]   Breakpoint ID: {}", bpId);
@@ -1650,7 +1663,7 @@ public class JdwpService {
         try {
             if (value instanceof StringReference) {
                 // Return actual string value without quotes (JSON will handle quoting when serialized)
-                return ((StringReference) value).value();
+                return redactString(((StringReference) value).value());
             }
             if (value instanceof PrimitiveValue) {
                 return value.toString();
@@ -1806,7 +1819,7 @@ public class JdwpService {
                         // Invoke toString()
                         Value result = objRef.invokeMethod(thread, toStringMethod, Collections.emptyList(), ObjectReference.INVOKE_SINGLE_THREADED);
                         if (result instanceof StringReference) {
-                            return ((StringReference) result).value();
+                            return redactString(((StringReference) result).value());
                         }
                     }
                 } catch (Exception e) {
@@ -1877,7 +1890,7 @@ public class JdwpService {
                         fieldValueStr = "null";
                     } else if (fieldValue instanceof StringReference) {
                         // Use actual string value without quotes (JSON will handle quoting)
-                        fieldValueStr = ((StringReference) fieldValue).value();
+                        fieldValueStr = redactString(((StringReference) fieldValue).value());
                     } else if (fieldValue instanceof PrimitiveValue) {
                         fieldValueStr = fieldValue.toString();
                     } else if (fieldValue instanceof ObjectReference) {
@@ -1903,7 +1916,7 @@ public class JdwpService {
                             for (int i = 0; i < displayLen; i++) {
                                 Value elemValue = array.getValue(i);
                                 if (elemValue instanceof StringReference) {
-                                    elements.add(((StringReference) elemValue).value());
+                                    elements.add(redactString(((StringReference) elemValue).value()));
                                 } else {
                                     elements.add(formatValue(elemValue, 0, thread));
                                 }
@@ -1966,7 +1979,7 @@ public class JdwpService {
                 return node;
             }
             if (value instanceof StringReference) {
-                node.put("value", ((StringReference) value).value());
+                node.put("value", redactString(((StringReference) value).value()));
                 return node;
             }
             if (value instanceof PrimitiveValue) {
@@ -2966,6 +2979,11 @@ public class JdwpService {
     /**
      * Find the path to the console log agent JAR
      */
+    /** Redact credential-looking content before exposing target strings to the UI. */
+    private static String redactString(String s) {
+        return com.jdwp.client.security.SecretRedactor.redact(s);
+    }
+
     private String findAgentJarPath() {
         // console-log-agent.jar (built by the Maven assembly in every package) is the
         // standalone javaagent for live log capture. It lives next to the client JAR

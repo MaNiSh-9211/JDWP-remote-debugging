@@ -127,7 +127,7 @@ public class LogReceiverService {
                     entry.stream = (String) logData.get("stream");
                     entry.thread = (String) logData.get("thread");
                     entry.timestamp = ((Number) logData.get("timestamp")).longValue();
-                    entry.message = (String) logData.get("message");
+                    entry.message = com.jdwp.client.security.SecretRedactor.redact((String) logData.get("message"));
                     
                     // Log that we received it
                     String msgPreview = entry.message != null && entry.message.length() > 0 
