@@ -22,6 +22,7 @@ export default defineConfig({
       react: nm('react'),
       'react-dom': nm('react-dom'),
       'react/jsx-runtime': path.resolve(nm('react'), 'jsx-runtime.js'),
+      axios: nm('axios'),
     },
   },
   server: { port: 5178, strictPort: true },
