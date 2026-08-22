@@ -8,6 +8,10 @@
 #   (set JDWP_API_TOKEN below when you do - the API is then reachable beyond localhost)
 services:
   debug-server:
+    # Uses the published GHCR image when available; `--build` rebuilds locally
+    # from ./server instead (offline-friendly).
+    image: ghcr.io/manish-9211/jdwp-debug-server:latest
+    pull_policy: missing
     build:
       context: ./server
       dockerfile: Dockerfile

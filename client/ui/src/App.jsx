@@ -579,6 +579,10 @@ function App() {
     // Support multiple line numbers separated by comma
     const lineNumbers = lineNumbersStr.split(',').map(ln => ln.trim()).filter(ln => ln)
     
+    // Optional request-id: when set, use the conditional endpoint so ONLY
+    // requests carrying this X-Debug-Request-Id are suspended.
+    const requestId = (document.getElementById('bp-request-id')?.value || '').trim()
+    
     if (lineNumbers.length === 0) {
       setMessage('✗ Please enter at least one line number')
       setTimeout(() => setMessage(''), 3000)
@@ -592,13 +596,14 @@ function App() {
       
       for (const lineNumber of lineNumbers) {
         try {
-          const response = await axios.post(`${API_BASE}/breakpoints`, null, {
-            params: { className: cleanClassName, lineNumber: parseInt(lineNumber) }
-          })
+          const endpoint = requestId ? '/breakpoints/conditional' : '/breakpoints'
+          const params = { className: cleanClassName, lineNumber: parseInt(lineNumber) }
+          if (requestId) params.targetRequestId = requestId
+          const response = await axios.post(`${API_BASE}${endpoint}`, null, { params })
           if (response.data.success) {
             successCount++
             results.push({ lineNumber, success: true })
-            addLog('action', `✓ Breakpoint Set at ${cleanClassName}:${lineNumber}`, response.data)
+            addLog('action', `✓ ${requestId ? 'Conditional b' : 'B'}reakpoint Set at ${cleanClassName}:${lineNumber}`, response.data)
           } else {
             failCount++
             results.push({ lineNumber, success: false, message: response.data.message })
@@ -960,6 +965,11 @@ function App() {
                   type="text"
                   id="bp-line"
                   placeholder="Line number(s) - e.g., 31 or 31,32,33"
+                />
+                <input
+                  type="text"
+                  id="bp-request-id"
+                  placeholder="Request ID (optional — conditional: only suspends requests with this X-Debug-Request-Id)"
                 />
                 <button
                   onClick={() => {
