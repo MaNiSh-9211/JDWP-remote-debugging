@@ -125,6 +125,9 @@ export default function App() {
   const [bpLine, setBpLine] = useState('')
   const [bpTriggerUrl, setBpTriggerUrl] = useState('')
   const [bpRequestId, setBpRequestId] = useState('')
+  const [bpType, setBpType] = useState('line')
+  const [bpLogMessage, setBpLogMessage] = useState('')
+  const [bpCondition, setBpCondition] = useState('')
   const [excClass, setExcClass] = useState('')
   const [evalExpr, setEvalExpr] = useState('')
   const [evalOut, setEvalOut] = useState('')
@@ -1261,6 +1264,21 @@ export default function App() {
     await refreshWatches()
   }
 
+  // IDE-style shortcuts: F7 into, F8 over, Shift+F8 out, F9 resume
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!connected || !selectedThread || debugCmdBusy) return
+      const tag = e.target && e.target.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === 'F8' && e.shiftKey) { e.preventDefault(); step('out') }
+      else if (e.key === 'F8') { e.preventDefault(); step('over') }
+      else if (e.key === 'F7') { e.preventDefault(); step('into') }
+      else if (e.key === 'F9') { e.preventDefault(); continueVm() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [connected, selectedThread, debugCmdBusy, step, continueVm])
+
   const addBreakpoint = async () => {
     const cn = bpClass.trim()
     const ln = parseInt(bpLine, 10)
@@ -1269,26 +1287,47 @@ export default function App() {
       return
     }
     const reqId = bpRequestId.trim()
+    const logMsg = bpType === 'logpoint' ? bpLogMessage.trim() : ''
+    const cond = bpType === 'expression' ? bpCondition.trim() : ''
+    if (bpType === 'logpoint' && !logMsg) {
+      showToast('Log message required for a logpoint', true)
+      return
+    }
+    if (bpType === 'expression' && !cond) {
+      showToast('Condition expression required', true)
+      return
+    }
     setBusy(true)
     let ok
     let data
     try {
-      const r = await unwrap(
-        reqId
-          ? debugApi.setConditionalBreakpoint(cn, ln, reqId, bpTriggerUrl.trim() || undefined)
-          : debugApi.setBreakpoint(cn, ln, bpTriggerUrl.trim() || undefined),
-      )
+      let r
+      if (bpType === 'logpoint' || bpType === 'expression') {
+        r = await unwrap(debugApi.setAdvancedBreakpoint({ className: cn, lineNumber: ln, logMessage: logMsg || null, condition: cond || null }))
+      } else if (reqId) {
+        r = await unwrap(debugApi.setConditionalBreakpoint(cn, ln, reqId, bpTriggerUrl.trim() || undefined))
+      } else {
+        r = await unwrap(debugApi.setBreakpoint(cn, ln, bpTriggerUrl.trim() || undefined))
+      }
       ok = r.ok
       data = r.data
     } finally {
       setBusy(false)
     }
     if (ok && data.success !== false) {
-      showToast(data.message || (reqId ? 'Conditional breakpoint set' : 'Breakpoint set'))
+      showToast(data.message || (logMsg ? 'Logpoint set' : cond ? 'Expression breakpoint set' : 'Breakpoint set'))
       setBpLine('')
       setBpRequestId('')
+      setBpLogMessage('')
+      setBpCondition('')
       await refreshBreakpoints()
     } else showToast(data?.message || 'Breakpoint failed', true)
+  }
+
+  const toggleBp = async (id, enabled) => {
+    const r = await unwrap(debugApi.toggleBreakpoint(id, enabled))
+    if (!r.ok || r.data?.success === false) showToast(r.data?.message || r.error || 'Toggle failed', true)
+    await refreshBreakpoints()
   }
 
   const removeBp = async (id) => {
@@ -2960,6 +2999,13 @@ export default function App() {
                   setBpTriggerUrl={setBpTriggerUrl}
                   bpRequestId={bpRequestId}
                   setBpRequestId={setBpRequestId}
+                  bpType={bpType}
+                  setBpType={setBpType}
+                  bpLogMessage={bpLogMessage}
+                  setBpLogMessage={setBpLogMessage}
+                  bpCondition={bpCondition}
+                  setBpCondition={setBpCondition}
+                  toggleBp={toggleBp}
                   addBreakpoint={addBreakpoint}
                   clearBps={clearBps}
                   toggleMute={toggleMute}

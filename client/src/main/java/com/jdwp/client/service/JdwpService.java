@@ -44,6 +44,67 @@ public class JdwpService {
     private final Map<String, AtomicInteger> breakpointHitCounts = new ConcurrentHashMap<>();
 
     /**
+     * Advanced per-breakpoint behaviour: logpoint messages, boolean conditions,
+     * disabled state. Keyed by breakpoint id.
+     */
+    public static final class BpOptions {
+        public String logMessage;      // when set: logpoint - capture vars, emit, auto-resume
+        public String condition;       // when set: suspend only if expression evaluates truthy
+        public volatile boolean disabled;
+    }
+
+    private final Map<String, BpOptions> breakpointOptions = new ConcurrentHashMap<>();
+
+    /** Broadcasts a logpoint entry to the live SSE stream and the log store (best effort). */
+    private void emitLogpoint(String bpId, String threadName, String message) {
+        logger.info("[JDWP CLIENT] LOGPOINT {} on {}: {}", bpId, threadName, message);
+        try {
+            LogReceiverService.LogEntry e = new LogReceiverService.LogEntry();
+            e.type = "logpoint";
+            e.stream = "stdout";
+            e.thread = threadName;
+            e.timestamp = System.currentTimeMillis();
+            e.message = "[LOGPOINT " + bpId + "] " + message;
+            if (logReceiverService != null) {
+                logReceiverService.ingestExternal(e); // store + broadcast in one path
+            } else if (logStreamService != null) {
+                logStreamService.broadcast(e);
+            }
+        } catch (Exception ex) {
+            logger.debug("logpoint broadcast failed: {}", ex.getMessage());
+        }
+    }
+
+    /** Capture frame-0 local variables as name=value strings (fast, no JDI invokes). */
+    private Map<String, String> captureFrameLocals(ThreadReference thread) {
+        Map<String, String> out = new LinkedHashMap<>();
+        try {
+            com.sun.jdi.StackFrame frame = thread.frame(0);
+            for (com.sun.jdi.LocalVariable var : frame.visibleVariables()) {
+                com.sun.jdi.Value v = frame.getValue(var);
+                String s = v == null ? "null" : v.toString();
+                if (s.length() > 200) s = s.substring(0, 200) + "...";
+                out.put(var.name(), s);
+            }
+        } catch (Exception e) {
+            logger.debug("captureFrameLocals failed: {}", e.getMessage());
+        }
+        return out;
+    }
+
+    /** Substitute {var} tokens in a logpoint template with captured locals. */
+    private static String renderLogTemplate(String template, Map<String, String> locals) {
+        StringBuilder sb = new StringBuilder(template.length() + 64);
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\{(\\w+)\\}").matcher(template);
+        while (m.find()) {
+            String val = locals.getOrDefault(m.group(1), "{" + m.group(1) + "?}");
+            m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(val));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    /**
      * JDWP event pump. JDI only applies SUSPEND_* policies when the debugger
      * READS the EventSet — without this thread breakpoints and steps would
      * fire on the wire but never suspend anything.
@@ -54,6 +115,9 @@ public class JdwpService {
 
     @Autowired(required = false)
     private com.jdwp.client.service.LogReceiverService logReceiverService;
+
+    @Autowired(required = false)
+    private com.jdwp.client.service.LogStreamService logStreamService;
 
     @Autowired(required = false)
     private com.jdwp.client.security.AuditService auditService;
@@ -86,6 +150,7 @@ public class JdwpService {
             // Clear all breakpoint state so each connection starts fresh (avoids stale breakpoints after target restart at 5005)
             breakpoints.clear();
             conditionalBreakpoints.clear();
+            breakpointOptions.clear();
             knownSuspendedThreads.clear();
             logger.info("[JDWP CLIENT] Cleared breakpoints and thread state for fresh connection");
 
@@ -248,6 +313,7 @@ public class JdwpService {
         }
         breakpoints.clear();
         conditionalBreakpoints.clear();
+        breakpointOptions.clear();
         knownSuspendedThreads.clear(); // Clear tracking
         fieldWatchpoints.clear();
         breakpointsMuted = false;
@@ -591,6 +657,57 @@ public class JdwpService {
         logger.info("[JDWP CLIENT] Conditional breakpoint registered; other requests will auto-resume");
         return bpId;
     }
+
+    /**
+     * Enterprise breakpoint: plain line BP plus optional logpoint message
+     * ({var} tokens), boolean condition (evaluated on hit via expression
+     * evaluation; falsy auto-resumes), or disabled state.
+     *
+     * @return map with breakpointId + resolved location info
+     */
+    public synchronized Map<String, Object> setAdvancedBreakpoint(String className, int lineNumber,
+                                                                  String logMessage, String condition) {
+        // One breakpoint per location (IDE semantics): replace any existing one.
+        String existingId = className + ":" + lineNumber;
+        if (breakpoints.containsKey(existingId)) {
+            removeBreakpoint(existingId);
+        }
+        String bpId = setBreakpoint(className, lineNumber);
+        BpOptions opts = new BpOptions();
+        if (logMessage != null && !logMessage.isBlank()) opts.logMessage = logMessage.trim();
+        if (condition != null && !condition.isBlank()) opts.condition = condition.trim();
+        if (opts.logMessage != null || opts.condition != null) {
+            breakpointOptions.put(bpId, opts);
+            if (opts.logMessage != null) {
+                // logpoints never keep the thread suspended
+                BreakpointRequest req = breakpoints.get(bpId);
+                // suspension policy already EVENT_THREAD; pump resumes on hit.
+            }
+        } else {
+            breakpointOptions.remove(bpId);
+        }
+        Map<String, Object> out = new HashMap<>();
+        out.put("breakpointId", bpId);
+        out.put("logMessage", opts.logMessage);
+        out.put("condition", opts.condition);
+        return out;
+    }
+
+    /** Enable/disable one breakpoint without removing it. */
+    public synchronized boolean toggleBreakpoint(String bpId, boolean enabled) {
+        BreakpointRequest req = breakpoints.get(bpId);
+        if (req == null) throw new IllegalArgumentException("Unknown breakpoint: " + bpId);
+        req.setEnabled(enabled);
+        BpOptions opts = breakpointOptions.computeIfAbsent(bpId, k -> new BpOptions());
+        opts.disabled = !enabled;
+        audit("toggle-breakpoint", Map.of("breakpoint", bpId, "enabled", enabled));
+        return enabled;
+    }
+
+    /** Options snapshot for the breakpoints listing. */
+    public BpOptions getBreakpointOptions(String bpId) {
+        return breakpointOptions.get(bpId);
+    }
     
     /** True only when this request had X-Debug-Request-Id header with a non-empty value (from DebugRequestFilter frame). */
     private boolean isDebugRequestId(String requestId) {
@@ -717,7 +834,7 @@ public class JdwpService {
                     com.sun.jdi.event.EventSet events = currentVm.eventQueue().remove();
                     for (com.sun.jdi.event.Event event : events) {
                         if (event instanceof com.sun.jdi.event.BreakpointEvent) {
-                            recordEventHit((com.sun.jdi.event.BreakpointEvent) event);
+                            handleBreakpointEvent((com.sun.jdi.event.BreakpointEvent) event);
                         } else if (event instanceof com.sun.jdi.event.StepEvent) {
                             logger.debug("[JDWP CLIENT] Step completed on thread {}",
                                     ((com.sun.jdi.event.StepEvent) event).thread().name());
@@ -728,8 +845,9 @@ public class JdwpService {
                                             : ee.exception().referenceType().name());
                         }
                     }
-                    // Do NOT resume here: the conditional-resume pass decides
-                    // which threads stay suspended (request-scoped debugging).
+                    // Do NOT resume here except for logpoints/conditions/disabled
+                    // (handled inline above): the conditional-resume pass decides
+                    // which remaining threads stay suspended (request-scoped).
                 } catch (com.sun.jdi.VMDisconnectedException e) {
                     logger.info("[JDWP CLIENT] Event pump stopping (VM disconnected)");
                     break;
@@ -745,6 +863,74 @@ public class JdwpService {
         pump.setDaemon(true);
         this.eventPumpThread = pump;
         pump.start();
+    }
+
+    /**
+     * Enterprise breakpoint behaviour on hit, in order:
+     *   disabled -> resume immediately (no record)
+     *   logpoint -> capture locals, render template, emit to log stream, resume
+     *   condition-> evaluate; falsy resumes, truthy falls through to suspend flow
+     *   default  -> record hit metadata and leave suspended for the resume pass
+     */
+    private void handleBreakpointEvent(com.sun.jdi.event.BreakpointEvent event) {
+        String bpId;
+        String threadName;
+        try {
+            bpId = event.location().declaringType().name() + ":" + event.location().lineNumber();
+            threadName = event.thread() != null ? event.thread().name() : "unknown";
+        } catch (Exception e) {
+            recordEventHit(event);
+            return;
+        }
+
+        BpOptions opts = breakpointOptions.get(bpId);
+
+        if (opts != null && opts.disabled) {
+            try { event.thread().resume(); } catch (Exception ignore) { }
+            logger.debug("[JDWP CLIENT] Breakpoint {} disabled - resumed", bpId);
+            return;
+        }
+
+        if (opts != null && opts.logMessage != null && !opts.logMessage.isBlank()) {
+            Map<String, String> locals = captureFrameLocals(event.thread());
+            String rendered = renderLogTemplate(opts.logMessage, locals);
+            emitLogpoint(bpId, threadName, rendered);
+            recordBreakpointHit(bpId);
+            try { event.thread().resume(); } catch (Exception ignore) { }
+            return;
+        }
+
+        if (opts != null && opts.condition != null && !opts.condition.isBlank()) {
+            boolean truthy;
+            try {
+                String res = evaluateExpression(threadName, opts.condition);
+                truthy = isTruthy(res);
+            } catch (Exception e) {
+                logger.warn("[JDWP CLIENT] Condition '{}' eval failed on {}: {} - treating as false",
+                        opts.condition, threadName, e.getMessage());
+                truthy = false;
+            }
+            if (!truthy) {
+                try { event.thread().resume(); } catch (Exception ignore) { }
+                recordBreakpointHit(bpId);
+                logger.debug("[JDWP CLIENT] Condition false at {} on {} - resumed", bpId, threadName);
+                return;
+            }
+            // condition true: fall through to normal suspension recording
+        }
+
+        recordEventHit(event);
+    }
+
+    /** Logpoint/condition style truthiness for string evaluation results. */
+    private static boolean isTruthy(String result) {
+        if (result == null) return false;
+        String s = result.trim();
+        if (s.isEmpty()) return false;
+        try {
+            if (s.matches("\"?\\d+(\\.0*)?\"?") && Double.parseDouble(s.replace("\"", "")) == 0d) return false;
+        } catch (NumberFormatException ignore) { }
+        return !s.equalsIgnoreCase("false") && !s.equalsIgnoreCase("null");
     }
 
     private synchronized void stopEventPump() {
@@ -2601,6 +2787,14 @@ public class JdwpService {
             
             // Use JDI's evaluation capability
             Value result = null;
+
+            // --- Enterprise conditions: comparisons & logic -------------------
+            if (isConditionExpression(expression)) {
+                boolean boolResult = evalBool(frame, thread, expression);
+                logger.info("[JDWP CLIENT] Condition '{}' -> {}", expression, boolResult);
+                return boolResult ? "true" : "false";
+            }
+
             try {
                 // Try to evaluate as a simple expression
                 // Note: JDI doesn't have built-in expression evaluation, so we'll use a workaround
@@ -2660,6 +2854,116 @@ public class JdwpService {
         }
     }
     
+    /** Detect comparison/logical condition expressions (a > 10, b == "x", a > 1 && b < 2). */
+    private static boolean isConditionExpression(String e) {
+        return e.contains("&&") || e.contains("||") || e.contains("==") || e.contains("!=")
+                || e.contains(">=") || e.contains("<=")
+                || e.matches("(?s).*\\s[<>]\\s.*");
+    }
+
+    private boolean evalBool(StackFrame frame, ThreadReference thread, String expression) {
+        // Split on || first (lowest precedence), then && inside each side.
+        int depth = 0;
+        List<int[]> orSplits = new ArrayList<>();
+        char[] chars = expression.toCharArray();
+        for (int i = 0; i < chars.length; i++) {
+            if (chars[i] == '(') depth++;
+            else if (chars[i] == ')') depth--;
+            else if (depth == 0 && i + 1 < chars.length && chars[i] == '|' && chars[i + 1] == '|') {
+                orSplits.add(new int[]{i, i + 2});
+                i++;
+            }
+        }
+        if (!orSplits.isEmpty()) {
+            int start = 0;
+            for (int[] sp : orSplits) {
+                if (evalBool(frame, thread, expression.substring(start, sp[0]).trim())) return true;
+                start = sp[1];
+            }
+            return evalBool(frame, thread, expression.substring(start).trim());
+        }
+        List<int[]> andSplits = new ArrayList<>();
+        for (int i = 0; i < chars.length; i++) {
+            if (chars[i] == '(') depth++;
+            else if (chars[i] == ')') depth--;
+            else if (depth == 0 && i + 1 < chars.length && chars[i] == '&' && chars[i + 1] == '&') {
+                andSplits.add(new int[]{i, i + 2});
+                i++;
+            }
+        }
+        if (!andSplits.isEmpty()) {
+            int start = 0;
+            for (int[] sp : andSplits) {
+                if (!evalBool(frame, thread, expression.substring(start, sp[0]).trim())) return false;
+                start = sp[1];
+            }
+            return evalBool(frame, thread, expression.substring(start).trim());
+        }
+
+        java.util.regex.Matcher cm = java.util.regex.Pattern.compile(">=|<=|==|!=|>|<").matcher(expression);
+        if (cm.find()) {
+            String op = cm.group();
+            Object lv = operandValue(expression.substring(0, cm.start()).trim(), frame);
+            Object rv = operandValue(expression.substring(cm.end()).trim(), frame);
+            int cmp;
+            if (lv instanceof Number && rv instanceof Number) {
+                cmp = Double.compare(((Number) lv).doubleValue(), ((Number) rv).doubleValue());
+            } else if (lv instanceof Boolean || rv instanceof Boolean) {
+                boolean lb = lv instanceof Boolean ? (Boolean) lv : Boolean.parseBoolean(String.valueOf(lv));
+                boolean rb = rv instanceof Boolean ? (Boolean) rv : Boolean.parseBoolean(String.valueOf(rv));
+                cmp = Boolean.compare(lb, rb);
+            } else {
+                cmp = String.valueOf(lv).compareTo(String.valueOf(rv));
+            }
+            switch (op) {
+                case ">":  return cmp > 0;
+                case "<":  return cmp < 0;
+                case ">=": return cmp >= 0;
+                case "<=": return cmp <= 0;
+                case "==": return cmp == 0;
+                default:   return cmp != 0;
+            }
+        }
+
+        Object v = operandValue(expression.trim(), frame);
+        if (v instanceof Boolean) return (Boolean) v;
+        if (v instanceof Number) return ((Number) v).doubleValue() != 0d;
+        String s = String.valueOf(v);
+        if (s.equalsIgnoreCase("true")) return true;
+        if (s.equalsIgnoreCase("false") || s.equals("null")) return false;
+        throw new RuntimeException("Cannot interpret as boolean: " + expression);
+    }
+
+    /** Resolve a condition operand: string/number/boolean literals or in-scope variables. */
+    private Object operandValue(String token, StackFrame frame) {
+        String s = token.trim();
+        if (s.length() >= 2 && ((s.startsWith("\"") && s.endsWith("\"")) || (s.startsWith("'") && s.endsWith("'")))) {
+            return s.substring(1, s.length() - 1);
+        }
+        if (s.equals("true")) return Boolean.TRUE;
+        if (s.equals("false")) return Boolean.FALSE;
+        if (s.equals("null")) return null;
+        if (s.matches("-?\\d+\\.\\d+") || s.matches("-?\\d+")) return Double.parseDouble(s);
+        try {
+            LocalVariable var = frame.visibleVariableByName(s);
+            if (var != null) {
+                Value v = frame.getValue(var);
+                if (v == null) return null;
+                if (v instanceof com.sun.jdi.BooleanValue) return ((com.sun.jdi.BooleanValue) v).value();
+                if (v instanceof com.sun.jdi.IntegerValue) return ((com.sun.jdi.IntegerValue) v).value();
+                if (v instanceof com.sun.jdi.LongValue) return ((com.sun.jdi.LongValue) v).value();
+                if (v instanceof com.sun.jdi.DoubleValue) return ((com.sun.jdi.DoubleValue) v).value();
+                if (v instanceof com.sun.jdi.FloatValue) return (double) ((com.sun.jdi.FloatValue) v).value();
+                if (v instanceof com.sun.jdi.ShortValue) return ((com.sun.jdi.ShortValue) v).value();
+                if (v instanceof com.sun.jdi.ByteValue) return ((com.sun.jdi.ByteValue) v).value();
+                if (v instanceof com.sun.jdi.CharValue) return String.valueOf(((com.sun.jdi.CharValue) v).value());
+                if (v instanceof StringReference) return ((StringReference) v).value();
+                return v.toString();
+            }
+        } catch (Exception ignore) { }
+        throw new RuntimeException("Unknown operand: " + token);
+    }
+
     public synchronized Map<String, Object> getCurrentSourceLocation(String threadName) {
         logger.info("========================================");
         logger.info("[JDWP CLIENT] GETTING CURRENT SOURCE LOCATION");

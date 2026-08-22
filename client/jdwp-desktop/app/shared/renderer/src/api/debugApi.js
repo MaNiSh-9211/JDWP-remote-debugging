@@ -56,6 +56,8 @@ export const debugApi = {
     api().post('/breakpoints/conditional', null, {
       params: { className, lineNumber, targetRequestId, triggerLoadUrl },
     }),
+  setAdvancedBreakpoint: (payload) => api().post('/breakpoints/advanced', payload),
+  toggleBreakpoint: (id, enabled) => api().post('/breakpoints/toggle', { id, enabled }),
   setMethodBreakpoint: (className, methodName, signature) =>
     api().post('/breakpoints/method', null, {
       params: { className, methodName, ...(signature ? { signature } : {}) },

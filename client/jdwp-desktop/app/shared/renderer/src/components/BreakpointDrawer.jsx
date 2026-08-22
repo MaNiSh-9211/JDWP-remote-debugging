@@ -15,6 +15,13 @@ export default function BreakpointDrawer({
   setBpTriggerUrl,
   bpRequestId,
   setBpRequestId,
+  bpType,
+  setBpType,
+  bpLogMessage,
+  setBpLogMessage,
+  bpCondition,
+  setBpCondition,
+  toggleBp,
   addBreakpoint,
   clearBps,
   toggleMute,
@@ -99,34 +106,95 @@ export default function BreakpointDrawer({
                 />
               </div>
               <div className="input-row">
-                <label>Request ID (conditional)</label>
+                <label>Type</label>
+                <select
+                  value={bpType}
+                  onChange={(e) => setBpType(e.target.value)}
+                  style={{ padding: 6, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 11 }}
+                >
+                  <option value="line">Line (suspend)</option>
+                  <option value="logpoint">Logpoint (trace, no pause)</option>
+                  <option value="expression">Expression condition</option>
+                  <option value="request">Request-ID conditional</option>
+                </select>
+              </div>
+              {bpType === 'logpoint' && (
+                <div className="input-row">
+                  <label>Log message</label>
+                  <input
+                    value={bpLogMessage}
+                    onChange={(e) => setBpLogMessage(e.target.value)}
+                    placeholder="hit with {varName} tokens - thread never pauses"
+                  />
+                </div>
+              )}
+              {bpType === 'expression' && (
+                <div className="input-row">
+                  <label>Condition</label>
+                  <input
+                    value={bpCondition}
+                    onChange={(e) => setBpCondition(e.target.value)}
+                    placeholder='e.g. a > 100 - suspends only when true'
+                  />
+                </div>
+              )}
+              {bpType === 'request' && (
+                <div className="input-row">
+                  <label>Request ID</label>
+                  <input
+                    value={bpRequestId}
+                    onChange={(e) => setBpRequestId(e.target.value)}
+                    placeholder="only suspend requests with this X-Debug-Request-Id"
+                  />
+                </div>
+              )}
+              {bpType !== 'logpoint' && (
+              <div className="input-row">
+                <label>Trigger</label>
                 <input
-                  value={bpRequestId}
-                  onChange={(e) => setBpRequestId(e.target.value)}
-                  placeholder="optional — only suspend requests with this X-Debug-Request-Id"
+                  value={bpTriggerUrl}
+                  onChange={(e) => setBpTriggerUrl(e.target.value)}
+                  placeholder="optional GET URL to load class"
                 />
               </div>
+              )}
               <div className="toolbar">
                 <button type="button" className="btn btn-primary" disabled={!connected || busy} onClick={addBreakpoint}>
-                  {bpRequestId.trim() ? 'Add conditional breakpoint' : 'Add line breakpoint'}
+                  {bpType === 'logpoint' ? 'Add logpoint'
+                    : bpType === 'expression' ? 'Add expression BP'
+                    : bpType === 'request' ? 'Add request BP'
+                    : 'Add line breakpoint'}
                 </button>
                 <button type="button" className="btn" disabled={!connected || busy} onClick={clearBps}>
                   Remove all
                 </button>
                 <button type="button" className="btn" disabled={!connected || busy} onClick={toggleMute}>
-                  {bpMuted ? 'Unmute' : 'Mute'}
+                  {bpMuted ? 'Unmute' : 'Mute all'}
                 </button>
               </div>
               <div className="bp-drawer__list-head">Active</div>
               <ul className="bp-drawer__list">
-                {breakpoints.map((b) => (
-                  <li key={b.id} className="bp-drawer__row">
-                    <span className="bp-drawer__loc">{b.location || b.id}</span>
-                    <button type="button" className="btn btn-ghost" onClick={() => removeBp(b.id)}>
-                      ×
-                    </button>
-                  </li>
-                ))}
+                {breakpoints.map((b) => {
+                  const off = b.disabled
+                  return (
+                    <li key={b.id} className="bp-drawer__row" style={{ opacity: off ? 0.45 : 1 }}>
+                      <span className="bp-drawer__loc" title={[b.logMessage && `log: ${b.logMessage}`, b.condition && `if: ${b.condition}`].filter(Boolean).join(' | ') || b.location || b.id}>
+                        {b.logMessage ? `📝 ${b.location || b.id}` : b.condition ? `❓ ${b.location || b.id}` : (b.location || b.id)}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        title={off ? 'Enable' : 'Disable'}
+                        onClick={() => toggleBp(b.id, !!off)}
+                      >
+                        {off ? '◌' : '⏻'}
+                      </button>
+                      <button type="button" className="btn btn-ghost" onClick={() => removeBp(b.id)}>
+                        ×
+                      </button>
+                    </li>
+                  )
+                })}
                 {!breakpoints.length && <li className="bp-drawer__empty">No breakpoints</li>}
               </ul>
             </div>

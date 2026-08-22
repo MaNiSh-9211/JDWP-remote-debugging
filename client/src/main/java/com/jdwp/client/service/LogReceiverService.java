@@ -109,6 +109,24 @@ public class LogReceiverService {
         }
     }
     
+    /**
+     * Entry point for log events produced inside the client itself
+     * (e.g. logpoints) so they land in the same store/stream as agent logs.
+     */
+    public void ingestExternal(LogEntry entry) {
+        if (entry == null || entry.message == null || entry.message.isBlank()) return;
+        logQueue.offer(entry);
+        synchronized (recentLogs) {
+            recentLogs.add(entry);
+            if (recentLogs.size() > MAX_RECENT_LOGS) {
+                recentLogs.remove(0);
+            }
+        }
+        if (logStreamService != null) {
+            logStreamService.broadcast(entry);
+        }
+    }
+
     private void handleClient(Socket clientSocket) {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8))) {

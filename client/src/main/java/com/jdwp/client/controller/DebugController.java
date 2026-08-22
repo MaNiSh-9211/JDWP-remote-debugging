@@ -383,9 +383,60 @@ public class DebugController {
     public ResponseEntity<Map<String, Object>> getAllBreakpoints() {
         try {
             List<Map<String, Object>> breakpoints = jdwpService.getAllBreakpoints();
+            // Enrich with advanced options (logpoint/condition/disabled).
+            for (Map<String, Object> bp : breakpoints) {
+                JdwpService.BpOptions opts = jdwpService.getBreakpointOptions(String.valueOf(bp.get("id")));
+                if (opts != null) {
+                    bp.put("logMessage", opts.logMessage);
+                    bp.put("condition", opts.condition);
+                }
+                bp.put("disabled", opts != null && opts.disabled);
+                bp.put("enabled", opts == null || !opts.disabled);
+            }
             Map<String, Object> response = new HashMap<>();
             response.put("success", true);
             response.put("breakpoints", breakpoints);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        }
+    }
+
+    /** Enterprise breakpoint: logpoint and/or boolean condition. */
+    @PostMapping("/breakpoints/advanced")
+    public ResponseEntity<Map<String, Object>> setAdvancedBreakpoint(@RequestBody Map<String, Object> body) {
+        try {
+            String className = String.valueOf(body.get("className"));
+            int lineNumber = Integer.parseInt(String.valueOf(body.get("lineNumber")));
+            String logMessage = body.get("logMessage") == null ? null : String.valueOf(body.get("logMessage"));
+            String condition = body.get("condition") == null ? null : String.valueOf(body.get("condition"));
+            Map<String, Object> result = jdwpService.setAdvancedBreakpoint(className, lineNumber, logMessage, condition);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.putAll(result);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        }
+    }
+
+    /** Enable/disable a single breakpoint without removing it. */
+    @PostMapping("/breakpoints/toggle")
+    public ResponseEntity<Map<String, Object>> toggleBreakpoint(@RequestBody Map<String, Object> body) {
+        try {
+            String id = String.valueOf(body.get("id"));
+            boolean enabled = Boolean.parseBoolean(String.valueOf(body.get("enabled")));
+            boolean nowEnabled = jdwpService.toggleBreakpoint(id, enabled);
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("id", id);
+            response.put("enabled", nowEnabled);
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             Map<String, Object> response = new HashMap<>();
