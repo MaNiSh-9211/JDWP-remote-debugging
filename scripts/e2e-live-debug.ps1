@@ -1,5 +1,5 @@
 # =============================================================================
-# E2E LIVE-DEBUG PROOF — run this to verify every claim in the README.
+# E2E LIVE-DEBUG PROOF -- run this to verify every claim in the README.
 #
 # Creates a real kind cluster (if missing), deploys two debuggable Java pods,
 # attaches the debugger through kubectl port-forward, sets a breakpoint,
@@ -43,7 +43,7 @@ Write-Host "[2] Building + loading demo image, deploying pods..." -ForegroundCol
 docker compose build debug-server 2>&1 | Out-Null
 # compose tags the build as ghcr.io/...:latest (see docker-compose.yml image:)
 docker tag ghcr.io/manish-9211/jdwp-debug-server:latest jdwp-debug-server:local
-if ($LASTEXITCODE -ne 0) { & $fail "demo image not built — run 'docker compose build debug-server'" }
+if ($LASTEXITCODE -ne 0) { & $fail "demo image not built -- run 'docker compose build debug-server'" }
 & $kindExe load docker-image jdwp-debug-server:local --name jdwp-demo 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { & $fail "kind load failed" }
 kubectl config use-context kind-jdwp-demo | Out-Null
@@ -103,11 +103,11 @@ try {
   # --- 9. Resume ----------------------------------------------------------------
   Invoke-RestMethod -Method Post -Uri "http://localhost:8083/api/debug/threads/$threadName/resume" -TimeoutSec 15 | Out-Null
   Wait-Job $job -Timeout 20 | Out-Null
-  & $pass "resumed — tagged request completed"
+  & $pass "resumed -- tagged request completed"
 
   Write-Host ""
   Write-Host "=============================================" -ForegroundColor Green
-  Write-Host " ALL CHECKS PASSED — everything above ran" -ForegroundColor Green
+  Write-Host " ALL CHECKS PASSED -- everything above ran" -ForegroundColor Green
   Write-Host " against a REAL Kubernetes cluster." -ForegroundColor Green
   Write-Host "=============================================" -ForegroundColor Green
 } finally {
