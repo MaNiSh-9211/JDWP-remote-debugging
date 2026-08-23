@@ -2,10 +2,12 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   debugApi,
   getApiBase,
+  getApiToken,
   logsStreamUrl,
   normalizeServerProxyPath,
   serverRequest,
   setApiBaseSafe,
+  setApiToken,
   unwrapServerProbeResponse,
 } from './api/debugApi.js'
 import VariableTree from './components/VariableTree.jsx'
@@ -101,6 +103,7 @@ function loadK8sPrefs() {
 
 export default function App() {
   const [apiBaseInput, setApiBaseInput] = useState(() => getApiBase())
+  const [apiTokenInput, setApiTokenInput] = useState(() => getApiToken())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [connected, setConnected] = useState(false)
   const [clientApiReachable, setClientApiReachable] = useState(false)
@@ -1714,9 +1717,10 @@ export default function App() {
 
   const saveSettings = async () => {
     await setApiBaseSafe(apiBaseInput.trim() || 'http://localhost:8083')
+    setApiToken(apiTokenInput.trim())
     setSettingsOpen(false)
     refreshStatus()
-    showToast('API base updated — reconnect if needed')
+    showToast('Settings updated — reconnect if needed')
   }
 
   const addConditionalBp = async () => {
@@ -2123,6 +2127,17 @@ export default function App() {
               style={{ width: '100%', padding: 8, marginBottom: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)' }}
               value={apiBaseInput}
               onChange={(e) => setApiBaseInput(e.target.value)}
+            />
+            <h2>API token</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 0 }}>
+              Required only when the client runs with <code>JDWP_API_TOKEN</code>. Sent as <code>X-Debug-Token</code>.
+            </p>
+            <input
+              type="password"
+              style={{ width: '100%', padding: 8, marginBottom: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)' }}
+              value={apiTokenInput}
+              onChange={(e) => setApiTokenInput(e.target.value)}
+              placeholder="leave empty for unsecured local clients"
             />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button type="button" className="btn" onClick={() => setSettingsOpen(false)}>

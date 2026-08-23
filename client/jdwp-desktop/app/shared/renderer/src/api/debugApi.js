@@ -30,13 +30,32 @@ export function logsStreamUrl() {
   return `${base()}/api/debug/logs/stream`
 }
 
+/** API token for secured clients. Set from Settings; kept in localStorage. */
+export function getApiToken() {
+  try {
+    return localStorage.getItem('jdwpApiToken') || ''
+  } catch {
+    return ''
+  }
+}
+
+export function setApiToken(token) {
+  try {
+    if (token && String(token).trim()) localStorage.setItem('jdwpApiToken', String(token).trim())
+    else localStorage.removeItem('jdwpApiToken')
+  } catch { /* ignore */ }
+}
+
 function api() {
-  return axios.create({
+  const instance = axios.create({
     baseURL: `${base()}/api/debug`,
     /** No cap — stepping/variables can take arbitrarily long while the target thread stays paused. */
     timeout: 0,
     validateStatus: () => true,
   })
+  const token = getApiToken()
+  if (token) instance.defaults.headers.common['X-Debug-Token'] = token
+  return instance
 }
 
 export const debugApi = {

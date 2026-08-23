@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -111,6 +112,8 @@ public class JdwpService {
      * fire on the wire but never suspend anything.
      */
     private volatile Thread eventPumpThread;
+    /** Serializes all JDI work triggered by breakpoint events (conditions/logpoints). */
+    private volatile ExecutorService bpWorkerExecutor;
     /** Most recent breakpoint hit: bpId, threadName, className, methodName, lineNumber, timestamp. */
     private volatile Map<String, Object> lastBreakpointHit;
 
@@ -822,6 +825,11 @@ public class JdwpService {
      */
     private synchronized void startEventPump() {
         stopEventPump();
+        bpWorkerExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "jdwp-bp-worker");
+            t.setDaemon(true);
+            return t;
+        });
         Thread pump = new Thread(() -> {
             logger.info("[JDWP CLIENT] JDWP event pump started");
             while (!Thread.currentThread().isInterrupted()) {
@@ -833,7 +841,21 @@ public class JdwpService {
                     com.sun.jdi.event.EventSet events = currentVm.eventQueue().remove();
                     for (com.sun.jdi.event.Event event : events) {
                         if (event instanceof com.sun.jdi.event.BreakpointEvent) {
-                            handleBreakpointEvent((com.sun.jdi.event.BreakpointEvent) event);
+                            // Hand to the serialized worker: JDI is not thread-safe and
+                            // condition evaluation can be slow - draining must never block.
+                            final com.sun.jdi.event.BreakpointEvent bp = (com.sun.jdi.event.BreakpointEvent) event;
+                            ExecutorService worker = bpWorkerExecutor;
+                            if (worker == null || worker.isShutdown()) continue;
+                            worker.execute(() -> {
+                                try {
+                                    processBreakpointEventSerialized(bp);
+                                } catch (com.sun.jdi.VMDisconnectedException vd) {
+                                    logger.info("[JDWP CLIENT] Worker stopping (VM disconnected)");
+                                } catch (Throwable t) {
+                                    logger.warn("[JDWP CLIENT] Breakpoint handling failed: {}", t.getMessage());
+                                    try { bp.thread().resume(); } catch (Exception ignore) { }
+                                }
+                            });
                         } else if (event instanceof com.sun.jdi.event.StepEvent) {
                             logger.debug("[JDWP CLIENT] Step completed on thread {}",
                                     ((com.sun.jdi.event.StepEvent) event).thread().name());
@@ -844,9 +866,6 @@ public class JdwpService {
                                             : ee.exception().referenceType().name());
                         }
                     }
-                    // Do NOT resume here except for logpoints/conditions/disabled
-                    // (handled inline above): the conditional-resume pass decides
-                    // which remaining threads stay suspended (request-scoped).
                 } catch (com.sun.jdi.VMDisconnectedException e) {
                     logger.info("[JDWP CLIENT] Event pump stopping (VM disconnected)");
                     break;
@@ -857,7 +876,7 @@ public class JdwpService {
                     logger.debug("[JDWP CLIENT] Event pump error: {}", e.getMessage());
                 }
             }
-            logger.info("[JDWP CLIENT] JDWP event pump stopped");
+            logger.info("[JDWP CLIENT] Event pump stopped");
         }, "jdwp-event-pump");
         pump.setDaemon(true);
         this.eventPumpThread = pump;
@@ -948,6 +967,22 @@ public class JdwpService {
             pump.interrupt();
         }
         this.eventPumpThread = null;
+        // Drain in-flight breakpoint work before disconnect tears down the VM.
+        ExecutorService worker = bpWorkerExecutor;
+        bpWorkerExecutor = null;
+        if (worker != null) {
+            worker.shutdown();
+            try {
+                worker.awaitTermination(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /** Runs on the serialized bp-worker; holds the service monitor so JDI stays single-threaded. */
+    private synchronized void processBreakpointEventSerialized(com.sun.jdi.event.BreakpointEvent event) {
+        handleBreakpointEvent(event);
     }
 
     /** Capture hit metadata for the UI/wait-for-breakpoint API and analytics counters. */

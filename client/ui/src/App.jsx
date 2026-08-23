@@ -101,6 +101,12 @@ function App() {
     }
   }
 
+  // API token for secured clients (session-only; sent on every request)
+  const [apiToken, setApiTokenState] = useState(() => sessionStorage.getItem('jdwp-token') || '')
+  useEffect(() => {
+    axios.defaults.headers.common['X-Debug-Token'] = apiToken || ''
+  }, [apiToken])
+
   const handleConnect = async () => {
     setLoading(true)
     setMessage('')
@@ -966,6 +972,14 @@ function App() {
               <button onClick={handleConnect} disabled={loading}>
                 {loading ? 'Connecting...' : 'Connect'}
               </button>
+              <input
+                type="password"
+                placeholder="API token (if set on client)"
+                value={apiToken}
+                onChange={(e) => setApiTokenState(e.target.value)}
+                disabled={loading}
+                style={{ marginLeft: '0.5rem', maxWidth: 220 }}
+              />
             </div>
           ) : (
             <div className="connected-status">
