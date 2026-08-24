@@ -77,6 +77,8 @@ export const debugApi = {
     }),
   setAdvancedBreakpoint: (payload) => api().post('/breakpoints/advanced', payload),
   toggleBreakpoint: (id, enabled) => api().post('/breakpoints/toggle', { id, enabled }),
+  rawPost: (path, body) => api().post(path, body),
+  get: (path) => api().get(path),
   setMethodBreakpoint: (className, methodName, signature) =>
     api().post('/breakpoints/method', null, {
       params: { className, methodName, ...(signature ? { signature } : {}) },

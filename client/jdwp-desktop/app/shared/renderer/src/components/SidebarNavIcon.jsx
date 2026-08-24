@@ -40,6 +40,14 @@ export default function SidebarNavIcon({ id }) {
           <path d="M10.2 9.2L8.8 13M13.8 9.2l1.4 3.8M10 16h4" />
         </svg>
       )
+    case 'timelens':
+      return (
+        <svg {...s} aria-hidden>
+          <circle cx="12" cy="13" r="7" />
+          <path d="M12 13V8M12 13l3 2" />
+          <path d="M9 2h6" />
+        </svg>
+      )
     case 'insights':
       return (
         <svg {...s} aria-hidden>

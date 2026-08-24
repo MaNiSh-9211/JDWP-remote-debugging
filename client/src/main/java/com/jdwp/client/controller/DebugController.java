@@ -1155,5 +1155,68 @@ public class DebugController {
             logger.warn("[JDWP CLIENT] Trigger GET failed (continuing anyway): {}", e.getMessage());
         }
     }
+
+    // ==================== TimeLens recorder ====================
+
+    /** Start a causality recording session on the given Class:line locations. */
+    @PostMapping("/recorder/start")
+    public ResponseEntity<Map<String, Object>> startRecorder(@RequestBody Map<String, Object> body) {
+        try {
+            String sessionKey = String.valueOf(body.get("sessionKey"));
+            Object rawLocs = body.get("locations");
+            List<String> locations = new ArrayList<>();
+            if (rawLocs instanceof List) {
+                for (Object o : (List<?>) rawLocs) locations.add(String.valueOf(o));
+            } else if (rawLocs != null) {
+                for (String s : String.valueOf(rawLocs).split("[,\n]")) locations.add(s);
+            }
+            Map<String, Object> result = jdwpService.startRecording(sessionKey, locations);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        }
+    }
+
+    @PostMapping("/recorder/{sessionKey}/stop")
+    public ResponseEntity<Map<String, Object>> stopRecorder(@PathVariable String sessionKey) {
+        try {
+            return ResponseEntity.ok(jdwpService.stopRecording(sessionKey));
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(response);
+        }
+    }
+
+    @GetMapping("/recorder/{sessionKey}")
+    public ResponseEntity<Map<String, Object>> getRecorderTimeline(
+            @PathVariable String sessionKey,
+            @RequestParam(required = false) Boolean recording) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("sessionKey", sessionKey);
+        response.put("recording", jdwpService.isRecording(sessionKey));
+        response.put("steps", jdwpService.getTimeline(sessionKey));
+        return ResponseEntity.ok(response);
+    }
+
+    // ==================== Panic stop ====================
+
+    /** Resume everything, remove all instrumentation, detach. Leave no trace. */
+    @PostMapping("/panic")
+    public ResponseEntity<Map<String, Object>> panicStop() {
+        try {
+            return ResponseEntity.ok(jdwpService.panicStop());
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.ok(response);
+        }
+    }
 }
 

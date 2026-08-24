@@ -53,9 +53,20 @@ public class JdwpService {
         public String condition;       // when set: suspend only if expression evaluates truthy
         public Integer minHits;        // when set: only start suspending from the Nth hit
         public volatile boolean disabled;
+        // --- TimeLens recorder ---
+        public boolean record;         // when set: append locals snapshot to the session timeline
+        public String sessionKey;      // recorder session this BP belongs to
+        public boolean alert;          // when set with logMessage: emit as high-visibility tripwire
     }
 
     private final Map<String, BpOptions> breakpointOptions = new ConcurrentHashMap<>();
+
+    // --- TimeLens: per-request causality timelines -----------------------------
+    /** sessionKey -> ordered recorded steps (capped). */
+    private final Map<String, java.util.Deque<Map<String, Object>>> recorderTimelines = new ConcurrentHashMap<>();
+    /** sessionKey -> breakpoint ids installed for that recording. */
+    private final Map<String, List<String>> recorderBps = new ConcurrentHashMap<>();
+    private static final int RECORDER_CAP = 500;
 
     /** Broadcasts a logpoint entry to the live SSE stream and the log store (best effort). */
     private void emitLogpoint(String bpId, String threadName, String message) {
@@ -936,7 +947,14 @@ public class JdwpService {
             }
         }
 
-        // 4. Logpoint: capture locals, emit rendered message, resume. Never suspends.
+        // 4. TimeLens recorder: append locals snapshot, resume. Never suspends.
+        if (opts != null && opts.record && opts.sessionKey != null) {
+            recordTimelineStep(opts.sessionKey, event, threadName);
+            try { event.thread().resume(); } catch (Exception ignore) { }
+            return;
+        }
+
+        // 5. Logpoint: capture locals, emit rendered message, resume. Never suspends.
         if (opts != null && opts.logMessage != null && !opts.logMessage.isBlank()) {
             Map<String, String> locals = captureFrameLocals(event.thread());
             String rendered = renderLogTemplate(opts.logMessage, locals);
@@ -948,6 +966,128 @@ public class JdwpService {
         // 5. Plain/conditional suspension: record metadata; the conditional-resume
         //    pass decides whether this request stays suspended (request-scoped).
         recordEventHit(event);
+    }
+
+    // --- TimeLens recorder ------------------------------------------------------
+
+    private void recordTimelineStep(String sessionKey, com.sun.jdi.event.BreakpointEvent event, String threadName) {
+        try {
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("timestamp", System.currentTimeMillis());
+            step.put("thread", threadName);
+            step.put("class", event.location().declaringType().name());
+            step.put("method", event.location().method().name());
+            step.put("line", event.location().lineNumber());
+            Map<String, String> locals = captureFrameLocals(event.thread());
+            // Redact captured values before they can reach any UI.
+            locals.replaceAll((k, v) -> com.jdwp.client.security.SecretRedactor.redact(v));
+            step.put("locals", locals);
+
+            java.util.Deque<Map<String, Object>> dq =
+                    recorderTimelines.computeIfAbsent(sessionKey, k -> new java.util.concurrent.ConcurrentLinkedDeque<>());
+            synchronized (dq) {
+                dq.addLast(step);
+                while (dq.size() > RECORDER_CAP) dq.pollFirst();
+            }
+        } catch (Exception e) {
+            logger.debug("[TIMELENS] record failed: {}", e.getMessage());
+        }
+    }
+
+    /** Install recorder BPs on Class:line entries ("com.x.Foo:31", one per line of text). */
+    public synchronized Map<String, Object> startRecording(String sessionKey, List<String> locations) {
+        if (sessionKey == null || sessionKey.isBlank()) throw new IllegalArgumentException("sessionKey required");
+        if (!isConnected()) throw new IllegalStateException("Not connected to JDWP server");
+        stopRecording(sessionKey); // replace silently
+        List<String> installed = new ArrayList<>();
+        for (String loc : locations) {
+            String l = loc.trim();
+            if (l.isEmpty()) continue;
+            int idx = l.lastIndexOf(':');
+            if (idx <= 0) continue;
+            String cn = l.substring(0, idx).trim();
+            int ln = Integer.parseInt(l.substring(idx + 1).trim());
+            String bpId = setBreakpoint(cn, ln);
+            BpOptions opts = new BpOptions();
+            opts.record = true;
+            opts.sessionKey = sessionKey;
+            breakpointOptions.put(bpId, opts);
+            installed.add(bpId);
+        }
+        if (installed.isEmpty()) throw new IllegalArgumentException("no valid Class:line locations");
+        recorderBps.put(sessionKey, installed);
+        recorderTimelines.computeIfAbsent(sessionKey, k -> new java.util.concurrent.ConcurrentLinkedDeque<>());
+        audit("recorder-start", Map.of("session", sessionKey, "locations", installed.size()));
+        Map<String, Object> out = new HashMap<>();
+        out.put("sessionKey", sessionKey);
+        out.put("installed", installed.size());
+        return out;
+    }
+
+    public synchronized Map<String, Object> stopRecording(String sessionKey) {
+        List<String> ids = recorderBps.remove(sessionKey);
+        int removed = 0;
+        if (ids != null) {
+            for (String id : ids) {
+                try { removeBreakpoint(id); removed++; } catch (Exception ignore) { }
+            }
+        }
+        audit("recorder-stop", Map.of("session", sessionKey, "removed", removed));
+        Map<String, Object> out = new HashMap<>();
+        out.put("sessionKey", sessionKey);
+        out.put("removedBreakpoints", removed);
+        return out;
+    }
+
+    public List<Map<String, Object>> getTimeline(String sessionKey) {
+        java.util.Deque<Map<String, Object>> dq = recorderTimelines.get(sessionKey);
+        if (dq == null) return List.of();
+        synchronized (dq) {
+            return new ArrayList<>(dq);
+        }
+    }
+
+    public boolean isRecording(String sessionKey) {
+        List<String> ids = recorderBps.get(sessionKey);
+        return ids != null && !ids.isEmpty();
+    }
+
+    /**
+     * PANIC STOP: leave the target exactly as found.
+     * Resumes every suspended thread, removes all breakpoints and watchpoints,
+     * clears recorder state, then detaches. Returns a summary of what was undone.
+     */
+    public synchronized Map<String, Object> panicStop() {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        int resumed = 0;
+        if (isConnected() && vm != null) {
+            try {
+                for (ThreadReference t : vm.allThreads()) {
+                    try {
+                        if (t.isSuspended()) { t.resume(); resumed++; }
+                    } catch (Exception ignore) { }
+                }
+            } catch (Exception e) {
+                logger.debug("panic resume sweep failed: {}", e.getMessage());
+            }
+        }
+        int bps = breakpoints.size();
+        try { removeAllBreakpoints(); } catch (Exception ignore) { }
+        int watches = fieldWatchpoints.size();
+        try { fieldWatchpoints.clear(); } catch (Exception ignore) { }
+        boolean wasConnected = isConnected();
+        if (wasConnected) {
+            try { disconnect(); } catch (Exception ignore) { }
+        }
+        // Recorder state is session data; keep timelines for post-mortem viewing
+        // but drop their BP installs (already removed via removeAllBreakpoints).
+        recorderBps.clear();
+        summary.put("threadsResumed", resumed);
+        summary.put("breakpointsRemoved", bps);
+        summary.put("watchpointsCleared", watches);
+        summary.put("detached", wasConnected);
+        audit("panic-stop", summary);
+        return summary;
     }
 
     /** Logpoint/condition style truthiness for string evaluation results. */

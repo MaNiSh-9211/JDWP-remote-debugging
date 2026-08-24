@@ -61,6 +61,7 @@ const NAV_SECTIONS = [
   { id: 'debugger', label: 'Debugger', hint: 'Frames, scope, evaluate, console' },
   { id: 'session', label: 'Session', hint: 'Client ping, JDWP attach, threads' },
   { id: 'breakpoints', label: 'Breakpoints', hint: 'Lines & conditions' },
+  { id: 'timelens', label: 'TimeLens', hint: 'Request causality recorder' },
   { id: 'cluster', label: 'Cluster', hint: 'K8s context & shell' },
   { id: 'insights', label: 'Insights', hint: 'Radar & dumps' },
 ]
@@ -1343,6 +1344,74 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [connected, selectedThread, debugCmdBusy, step, continueVm])
 
+  // ---- TimeLens: request causality recorder --------------------------------
+  const [lensSession, setLensSession] = useState(() => `flight-${Date.now().toString(36)}`)
+  const [lensLocations, setLensLocations] = useState('')
+  const [lensSteps, setLensSteps] = useState([])
+  const [lensRecording, setLensRecording] = useState(false)
+  const [lensBusy, setLensBusy] = useState(false)
+
+  const lensStart = async () => {
+    const electron = typeof window !== 'undefined' ? window.jdwpElectron : null
+    if (!connected) { showToast('Attach to a VM first', true); return }
+    const locs = lensLocations.split('\n').map((s) => s.trim()).filter(Boolean)
+    if (!locs.length) { showToast('Add at least one Class:line', true); return }
+    setLensBusy(true)
+    try {
+      const r = await unwrap(debugApi.rawPost('/recorder/start', { sessionKey: lensSession, locations: locs }))
+      if (r.ok && r.data.success !== false) {
+        setLensRecording(true)
+        showToast(`TimeLens recording ${r.data.installed} location(s) — trigger a tagged request`)
+        pushActivity(`TimeLens started (${r.data.installed} probes)`)
+      } else showToast(r.data?.message || r.error || 'Recorder failed', true)
+    } finally { setLensBusy(false) }
+  }
+
+  const lensStop = async () => {
+    setLensBusy(true)
+    try {
+      await unwrap(debugApi.rawPost(`/recorder/${encodeURIComponent(lensSession)}/stop`, {}))
+      setLensRecording(false)
+      showToast('TimeLens stopped')
+      pushActivity('TimeLens stopped')
+    } finally { setLensBusy(false) }
+  }
+
+  const lensRefresh = async () => {
+    try {
+      const r = await unwrap(debugApi.get(`/recorder/${encodeURIComponent(lensSession)}`))
+      if (r.ok && r.data.success !== false) {
+        setLensSteps(r.data.steps || [])
+        setLensRecording(!!r.data.recording)
+      }
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => {
+    if (activeNav !== 'timelens') return
+    lensRefresh()
+    const id = setInterval(lensRefresh, 2000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeNav, lensSession])
+
+  // ---- Panic stop -----------------------------------------------------------
+  const [panicking, setPanicking] = useState(false)
+  const panicStop = async () => {
+    if (!window.confirm('PANIC STOP:\n\n- Resume ALL suspended threads\n- Remove ALL breakpoints & watchpoints\n- Detach from the target VM\n\nContinue?')) return
+    setPanicking(true)
+    try {
+      const r = await unwrap(debugApi.rawPost('/panic', {}))
+      if (r.ok) {
+        setConnected(false); setThreads([]); setSelectedThread(null); setFrames([]); setVarsEnhanced(null)
+        setLensRecording(false)
+        showToast(`Panic stop: resumed ${r.data.threadsResumed ?? 0}, removed ${r.data.breakpointsRemoved ?? 0}, detached`)
+        pushActivity('PANIC STOP executed')
+        await refreshStatus()
+      } else showToast(r.error || 'Panic failed', true)
+    } finally { setPanicking(false) }
+  }
+
   const addBreakpoint = async () => {
     const cn = bpClass.trim()
     const ln = parseInt(bpLine, 10)
@@ -2220,6 +2289,16 @@ export default function App() {
           </div>
           <div className="sidebar-footer">
             <span className={`badge ${connected ? 'badge-ok' : 'badge-off'}`}>{connected ? 'Live' : 'Off'}</span>
+            <button
+              type="button"
+              className="btn btn--sm"
+              title="PANIC: resume all threads, remove breakpoints & watchpoints, detach. Leave production exactly as found."
+              style={{ background: '#f85149', borderColor: '#f85149', color: '#fff', fontWeight: 700 }}
+              disabled={panicking || !connected}
+              onClick={panicStop}
+            >
+              {panicking ? '…' : 'PANIC'}
+            </button>
             <button type="button" className="btn btn-ghost btn--sm" onClick={() => setSettingsOpen(true)}>
               API
             </button>
@@ -2752,6 +2831,106 @@ export default function App() {
             </div>
           </div>
         </section>
+            )}
+            {activeNav === 'timelens' && (
+              <section className="panel panel--page">
+                <div className="panel-header">
+                  <span>TimeLens — request causality recorder</span>
+                  {lensRecording && (
+                    <span style={{ fontSize: 10, color: '#f85149', fontFamily: 'var(--font-mono)' }}>
+                      ● RECORDING
+                    </span>
+                  )}
+                </div>
+                <div className="panel-body">
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '0 0 10px' }}>
+                    Mark a few lines. Every request that crosses them is recorded — ordered timeline, time
+                    between steps, and full variable state at each step. Nothing ever pauses.
+                  </p>
+                  <div className="input-row">
+                    <label>Probes (one Class:line per line)</label>
+                    <textarea
+                      value={lensLocations}
+                      onChange={(e) => setLensLocations(e.target.value)}
+                      rows={4}
+                      placeholder={'com.jdwp.server.controller.UserController:28\ncom.jdwp.server.controller.UserController:31\ncom.jdwp.server.service.UserService:22'}
+                      style={{
+                        width: '100%',
+                        padding: 8,
+                        borderRadius: 8,
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg-deep)',
+                        color: 'var(--text)',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 11,
+                        resize: 'vertical',
+                      }}
+                    />
+                  </div>
+                  <div className="toolbar" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                    <button type="button" className="btn btn-primary" disabled={!connected || busy || lensBusy || lensRecording} onClick={lensStart}>
+                      Start recording
+                    </button>
+                    <button type="button" className="btn" disabled={!lensRecording} onClick={lensStop}>
+                      Stop
+                    </button>
+                    <button type="button" className="btn btn-ghost" onClick={lensRefresh}>
+                      Refresh timeline
+                    </button>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                      session: {lensSession}
+                    </span>
+                  </div>
+                  {lensSteps.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {(() => {
+                        const sorted = [...lensSteps].sort((a, b) => a.timestamp - b.timestamp)
+                        let prev = null
+                        return sorted.map((s, i) => {
+                          const prevLocals = prev ? prev.locals || {} : null
+                          prev = s
+                          const delta = i === 0 ? null : s.timestamp - sorted[i - 1].timestamp
+                          return (
+                            <div
+                              key={`${s.timestamp}-${i}`}
+                              style={{
+                                border: '1px solid var(--border)',
+                                borderRadius: 8,
+                                padding: '6px 10px',
+                                background: 'var(--bg-deep)',
+                              }}
+                            >
+                              <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                                <span style={{ color: 'var(--accent, #58a6ff)' }}>#{i + 1}</span>
+                                <span style={{ flex: 1 }}>
+                                  {s.class}.{s.method}:<b>{s.line}</b>
+                                </span>
+                                <span title={new Date(s.timestamp).toLocaleString()} style={{ color: 'var(--text-muted)' }}>
+                                  {delta != null ? `+${delta}ms` : new Date(s.timestamp).toLocaleTimeString()}
+                                </span>
+                                <span style={{ color: 'var(--text-muted)' }}>{s.thread}</span>
+                              </div>
+                              {s.locals && Object.keys(s.locals).length > 0 && (
+                                <pre
+                                  className="mono-block"
+                                  style={{ marginTop: 4, marginBottom: 0, fontSize: 9.5, whiteSpace: 'pre-wrap' }}
+                                >
+                                  {Object.entries(s.locals)
+                                    .map(([k, v]) => {
+                                      const changed = prevLocals && prevLocals[k] !== v && i > 0
+                                      return `${changed ? '~ ' : '  '}${k} = ${v}`
+                                    })
+                                    .join('\n')}
+                                </pre>
+                              )}
+                            </div>
+                          )
+                        })
+                      })()}
+                    </div>
+                  )}
+                </div>
+              </section>
             )}
             {activeNav === 'cluster' && (
           <section className="panel panel--page cluster-panel">
