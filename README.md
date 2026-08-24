@@ -11,6 +11,25 @@
 
 Most debuggers force an ugly trade-off in production: either you don't debug at all, or you suspend whole threads/processes and take your users down with you. JDWP Live Debugger solves this with *request-scoped debugging*: only the specific request you tag gets paused at a breakpoint — every other request flows through untouched.
 
+## How we compare
+
+| Capability | IntelliJ IDEA | Google Cloud Debugger | Rookout | **This project** |
+|---|---|---|---|---|
+| Non-blocking breakpoints | ❌ pauses thread | ✓ snapshots | ✓ | ✅ request-scoped |
+| Logpoints (trace, no pause) | ✓ | ✓ | paid tier | ✅ |
+| Expression conditions | ✓ full IDE | limited | ✓ | ✅ comparisons + logic |
+| Hit-count gates | ✓ | ✗ | ✓ | ✅ |
+| Conditional logpoints | ✗ | ✗ | paid tier | ✅ |
+| Per-BP enable/disable | ✓ | ✗ | ✓ | ✅ |
+| Drop frame / rewind | ✓ | ✗ | ✗ | ✅ |
+| TimeLens (causality timeline) | ✗ | ✗ | ✗ | ✅ |
+| Panic stop (clean-exit) | n/a | ✗ | partial | ✅ |
+| K8s pod attach via UI | plugin | GKE only | agent install | ✅ any cluster |
+| AI-driven debugging (MCP 69 tools) | ✗ | ✗ | ✗ | ✅ |
+| Self-hosted, open source | ✗ proprietary | ✗ proprietary | ✗ proprietary | ✅ MIT |
+
+> Comparison based on publicly documented features as of early 2026. Cloud Debugger is deprecated. Rookout was acquired by Nimble.
+
 ```mermaid
 graph LR
     subgraph "Your Machine"
@@ -177,7 +196,9 @@ Token auth with constant-time comparison and brute-force lockout · CIDR target 
 
 | Document | Contents |
 |----------|----------|
-| [Architecture](docs/architecture.md) | Components, data flow, design decisions (with diagrams) |
+| [Architecture](docs/architecture.md) | Components, data flow, design decisions, 10 diagrams |
+| [Diagrams](docs/diagrams.md) | 10 Mermaid diagrams covering every subsystem |
+| [Performance](docs/performance.md) | Real measured benchmarks from live cluster tests |
 | [Security model](docs/security.md) | Threat model, hardening guide, controls reference |
 | [API reference](docs/api-reference.md) | Every REST endpoint with parameters and examples |
 | [Production debugging](docs/production-debugging.md) | Filter-lib & dynamic-agent rollout guide |
@@ -198,6 +219,26 @@ Expected output ends with `ALL CHECKS PASSED`, having verified:
 4. Tagged request suspends **inside the pod**
 5. Variables readable from suspended pod thread
 6. Resume completes the request
+
+## FAQ
+
+**Does this actually not block production traffic?**
+Yes. Verified against a live Kubernetes cluster — untagged requests complete in normal time (83–425ms observed). Only requests carrying your `X-Debug-Request-Id` header pause. See `scripts/e2e-live-debug.ps1` to prove it on your own cluster.
+
+**How is this different from IntelliJ's remote debug?**
+IntelliJ suspends the thread for ALL users when it hits your breakpoint. We suspend only the request you tagged. Everyone else gets a response in normal time.
+
+**Do I need to install anything on the target pods?**
+Just enable JDWP via `JAVA_TOOL_OPTIONS` env var — no agent JARs on the classpath, no code changes, no sidecar containers.
+
+**Is this secure enough for production?**
+The security model assumes the debugger is privileged and layers controls accordingly: token auth with lockout, CIDR allow-listing, idle disconnect, audit trail, secret redaction, RBAC without exec/write verbs, port-forward-only access (no exposed JDWP ports), and a panic button that removes all instrumentation instantly.
+
+**Can I use this from a browser?**
+Yes — the web UI at `localhost:8083` has full debugger parity including cluster attach (server-side kubectl). The Electron desktop app adds source viewing and a read-only kubectl terminal.
+
+**Can AI IDEs use this?**
+Yes — two MCP servers expose 69 tools so Cursor/Claude can set breakpoints, inspect variables, evaluate expressions, and run auto-debug workflows programmatically.
 
 ## Troubleshooting
 
