@@ -1,142 +1,82 @@
 # JDWP Live Debugger
 
-**Attach a full debugger to Java JVMs running in Docker & Kubernetes — without stopping them, without redeploying, and without blocking other requests.**
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/MaNiSh-9211/JDWP-remote-debugging/actions/workflows/ci.yml/badge.svg)](https://github.com/MaNiSh-9211/JDWP-remote-debugging/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-21+-orange.svg)](https://openjdk.org)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.x-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![Electron](https://img.shields.io/badge/Desktop-Electron-47848F.svg)](https://www.electronjs.org)
-[![MCP](https://img.shields.io/badge/AI-MCP%20Ready-8A2BE2.svg)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/AI-MCP_69_tools-8A2BE2.svg)](https://modelcontextprotocol.io)
 
-Most debuggers force an ugly trade-off in production: either you don't debug at all, or you suspend whole threads/processes and take your users down with you. **JDWP Live Debugger** solves this with *request-scoped debugging*: only the specific request you tag gets paused at a breakpoint — every other request flows through untouched.
+**Attach a full debugger to Java JVMs running in Docker & Kubernetes — without stopping them, without redeploying, and without blocking other requests.**
 
-```
-┌──────────────────────────  Your Machine  ──────────────────────────┐
-│                                                                    │
-│   JDWP Studio (Electron)          AI IDE + MCP Server              │
-│   or any Web Browser              (Cursor / Claude / …)            │
-│            │                              │                        │
-│            ▼                              ▼                        │
-│   ┌──────────────────────────────────────────────┐                 │
-│   │        Debug Client  (Spring Boot :8083)     │                 │
-│   │   JDI engine · breakpoints · variables ·     │                 │
-│   │   stepping · live log capture · token auth   │                 │
-│   └───────────────────┬──────────────────────────┘                 │
-└───────────────────────│────────────────────────────────────────────┘
-                        │  JDWP over `kubectl port-forward`
-                        │  (never exposed to the network)
-                        ▼
-┌───────────────────────────  Cluster  ──────────────────────────────┐
-│   ┌── Pod A ─────────────────┐   ┌── Pod B ─────────────────┐      │
-│   │  JVM + JDWP agent :5005  │   │  JVM + JDWP agent :5005  │      │
-│   │  debug-filter-lib        │   │  (untouched replicas     │      │
-│   │  → pauses ONLY requests  │   │   keep serving traffic)  │      │
-│   │    tagged X-Debug-Id     │   │                          │      │
-│   └──────────────────────────┘   └──────────────────────────┘      │
-└────────────────────────────────────────────────────────────────────┘
+Most debuggers force an ugly trade-off in production: either you don't debug at all, or you suspend whole threads/processes and take your users down with you. JDWP Live Debugger solves this with *request-scoped debugging*: only the specific request you tag gets paused at a breakpoint — every other request flows through untouched.
+
+```mermaid
+graph LR
+    subgraph "Your Machine"
+        UI["🖥️ JDWP Studio<br/>(Electron)"]
+        WEB["🌐 Web UI<br/>(localhost:8083)"]
+        AI["🤖 AI IDE + MCP"]
+        DC["Debug Client<br/>(Spring Boot :8083)"]
+        UI --> DC
+        WEB --> DC
+        AI -->|"MCP stdio"| MCP1["MCP Local<br/>(37 tools)"]
+        MCP1 --> DC
+        AI -->|"MCP stdio"| MCP2["MCP K8s<br/>(32 tools)"]
+        MCP2 --> DC
+    end
+
+    subgraph "Kubernetes Cluster"
+        PF["kubectl port-forward"] --> POD_A["Pod A<br/>JVM + JDWP :5005"]
+        PF --> POD_B["Pod B<br/>JVM + JDWP :5005"]
+    end
+
+    DC <-->|"JDWP over tunnel"| PF
 ```
 
 ---
+
+## Table of contents
+
+- [Why this exists](#why-this-exists)
+- [Quick start](#quick-start)
+- [Download prebuilt](#download-prebuilt)
+- [Features](#features)
+- [Architecture](docs/architecture.md)
+- [Security model](docs/security.md)
+- [API reference](docs/api-reference.md)
+- [Production debugging](docs/production-debugging.md)
+- [Environment variables](docs/environment-vars.md)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## Why this exists
 
 | Traditional remote debugging | JDWP Live Debugger |
 |---|---|
 | Breakpoint suspends **all** traffic through that code path | Only the request you tag is suspended; all others proceed |
-| Requires app restart with `suspend=y` | Attaches to a **running** JVM (`suspend=n`, dynamic agent loading supported) |
-| JDWP port opened on NodePort/LoadBalancer | JDWP stays ClusterIP-only; access via short-lived `kubectl port-forward` |
-| Debugging is a human-only activity | First-class **MCP server** so AI IDEs can set breakpoints and read variables safely |
-| No trace of who debugged what | Session-based API with audit logging and automatic timeouts |
-
-## Feature highlights
-
-- **Non-blocking breakpoints** — the optional `debug-filter-lib` dependency pauses only requests carrying your debug header (`X-Debug-Request-Id`). Other users never notice.
-- **Full debugger feature set** — breakpoints (line + exception), step over/into/out, continue, stack frames, deep variable inspection, expression evaluation.
-- **Live log capture** — a tiny javaagent is injected into the target JVM on attach; application logs stream back to the UI over SSE, no restart needed.
-- **Kubernetes-native sessions** — pod discovery by label, port-forward lifecycle management, session timeouts, and audit logging built into the in-cluster debugger.
-- **Services browser (GitHub & Bitbucket)** — connect a read-only token (kept in memory only), list every repository you have access to (orgs included), pick branches, shallow-clone straight into the built-in source view, and jump to matching running pods in your cluster.
-- **JDWP Studio desktop app** — cross-platform Electron shell (Windows/macOS/Linux) with source view, variable tree, HTTP replay drawer, and a kubectl terminal that only allows read-only commands.
-- **AI-ready via MCP** — two MCP servers: one for local/JDWP workflows (37 tools), one Kubernetes-aware (32 tools: pods, tunnels, sessions).
-- **Security-first defaults** — API token auth with brute-force lockout, JDWP target allow-list, idle-session auto-disconnect, localhost binding, locked-down CORS, least-privilege RBAC (no exec, no write verbs), secret redaction in logs/variables, and a full audit trail.
-
-## Repository layout
-
-```
-├── client/                     # Debug Client — Spring Boot JDI engine (:8083)
-│   ├── src/main/java/…         #   JdwpService, controllers, security, log agent
-│   ├── ui/                     #   Web UI (React + Vite) served from the client
-│   └── jdwp-desktop/           #   JDWP Studio — Electron desktop app (Win/mac/Linux)
-├── server/                     # Demo Spring Boot app used as the debug target
-├── jdwp-mcp/                   # MCP server #1 — local JDWP debugging tools
-├── k8s-debug/                  # In-cluster, session-based K8s debugger (REST API)
-├── k8s-remote-debug/
-│   ├── debug-filter-lib/       # ★ The non-blocking magic: request-scoped pause filter
-│   ├── debug-agent/            # Zero-code-change dynamic attach agent
-│   ├── mcp-server/             # MCP server #2 — Kubernetes-aware debugging tools
-│   ├── mock-services/          # Two demo services for end-to-end testing
-│   └── k8s/                    # Manifests: RBAC, deployments, NetworkPolicy, kind configs
-├── production-files/           # Production rollout guides (filter-lib & dynamic agent)
-├── scripts/                    # Kind demo bootstrap + port-forward helpers
-├── k8s/kind-jdwp-demo/         # One-command Kind demo cluster
-└── docs/                       # Architecture, security model, production guide
-```
-
-## Download
-
-Prebuilt artifacts ship with every release — no build needed:
-
-| Asset | Use |
-|---|---|
-| `JDWP.Studio.Setup.*.exe` | Windows installer |
-| `JDWP.Studio-*-*.dmg` | macOS app |
-| `JDWP.Studio.*.AppImage` | Linux app |
-| `debug-client-1.0.0.jar` | The debug client (run `java -jar`, needs JDK 21+) |
-| `console-log-agent.jar` | Standalone log-capture agent for local JVMs |
-
-Container images are published on GHCR:
-
-```bash
-# demo debug target
-docker run -p 8081:8081 -p 5005:5005 ghcr.io/manish-9211/jdwp-debug-server:latest
-```
-
-## Prove it yourself (live cluster, one command)
-
-Skeptical that cluster attach actually works? Run this — it creates a real kind cluster, deploys debuggable Java pods, attaches through `kubectl port-forward`, and asserts every claim above:
-
-```powershell
-# Windows (needs Docker + kubectl + JDK 21; kind is downloaded automatically)
-powershell -ExecutionPolicy Bypass -File scripts/e2e-live-debug.ps1
-```
-
-Expected output ends with `ALL CHECKS PASSED`, having verified:
-
-1. Pods reach `Running` in a **real Kubernetes cluster**
-2. Debugger attaches to the pod's JVM through the port-forward tunnel
-3. Untagged HTTP requests complete normally (**never blocked**)
-4. A request carrying `X-Debug-Request-Id` is **suspended inside the pod** while untagged traffic keeps flowing
-5. Variables are readable from the suspended pod thread
-6. Resume completes the request
-
-The Studio UI exposes exactly these primitives: context discovery (`kubectl config get-contexts`), pod discovery (`kubectl get pods`), per-pod JDWP forward with live status, and a read-only kubectl shell.
+| Requires app restart with `suspend=y` | Attaches to a **running** JVM (`suspend=n`) |
+| JDWP port opened on NodePort/LoadBalancer | JDWP stays ClusterIP-only; access via `kubectl port-forward` |
+| Debugging is human-only activity | First-class MCP server so AI IDEs can set breakpoints and read variables |
+| No trace of who debugged what | Session-based audit trail with automatic timeouts |
 
 ## Quick start (Docker, 3 minutes)
 
 Prerequisites: JDK 21+, Maven 3.9+, Docker.
 
 ```bash
-# 1. Start the demo target (Spring Boot app with JDWP enabled inside the container)
+# 1. Start the demo target
 docker compose up -d --build
 
 # 2. Start the debug client
 cd client && mvn spring-boot:run
 
 # 3. Open the web UI
-#    http://localhost:8083  →  Connect to host=localhost port=5005
+#    http://localhost:8083 → Connect to host=localhost port=5005
 ```
 
-Try it: set a breakpoint at `com.jdwp.server.controller.UserController:getUsers`, then click **GET /users** in the API panel. The containerized app freezes at your breakpoint — inspect variables, step, resume.
+Try it: set a breakpoint at `UserController:getUsers` line 29, then click **GET /users**. The containerized app pauses at your breakpoint — inspect variables, step, resume.
 
 ### Desktop app (Electron)
 
@@ -148,9 +88,10 @@ npm run windows    # or: npm run macos | npm run linux
 ### One-command Kubernetes demo (Kind)
 
 ```bash
-./scripts/bootstrap-kind-demo.ps1     # creates cluster, builds images, deploys 2 pods
-./scripts/kind-jdwp-forward-jdwp.ps1  # forwards JDWP 5005/5006 to localhost
+powershell -File scripts/e2e-live-debug.ps1
 ```
+
+This creates a real Kind cluster, deploys two Java pods, attaches through port-forward, sets a breakpoint, proves untagged traffic isn't blocked, and verifies tagged-request suspension — all automated.
 
 ### AI IDE integration (MCP)
 
@@ -171,61 +112,107 @@ Add to `.cursor/mcp.json` (see `jdwp-mcp/cursor-mcp-config.example.json`):
 }
 ```
 
-Your AI can now `jdwp_set_breakpoint`, `jdwp_get_variables`, `jdwp_step_over`, run a full `jdwp_auto_debug` workflow, and more — 37 tools total. For cluster-wide AI debugging use `k8s-remote-debug/mcp-server` (32 `k8s_*` tools).
+Your AI IDE can now set breakpoints, inspect variables, evaluate expressions, and run full auto-debug workflows — 37 tools locally plus 32 Kubernetes tools via the second server.
 
-## Non-blocking debugging in production
+## Download prebuilt
 
-Two drop-in approaches, both documented in [`docs/production-debugging.md`](docs/production-debugging.md):
+Prebuilt artifacts ship with every [release](https://github.com/MaNiSh-9211/JDWP-remote-debugging/releases):
 
-1. **Maven dependency** — add `debug-filter-lib` to your service. It registers a servlet filter that checks every incoming request for your debug header; untagged requests are never paused.
-2. **Zero code changes** — attach `debug-agent` dynamically to any running JVM (via the client's `/api/debug/load-agent` endpoint or `kubectl cp`). No pom changes, no redeploy.
+| Asset | Purpose |
+|-------|---------|
+| `JDWP.Studio.Setup.*.exe` | Windows installer |
+| `JDWP.Studio-*-arm64.dmg` | macOS app |
+| `JDWP.Studio.*.AppImage` | Linux app |
+| `debug-client-1.0.0.jar` | Debug client (JDK 21+ required) |
+| `console-log-agent.jar` | Standalone log-capture agent |
 
-Either way, the workflow is:
+Container images on GHCR:
 
 ```bash
-# 1. Create a debug session against a pod (in-cluster debugger or MCP)
-curl -X POST http://localhost:8090/api/debug/sessions \
-  -d '{"namespace":"prod","podName":"orders-7d9f…","requestId":"debug-abc123"}'
-
-# 2. Set a breakpoint scoped to that request id
-# 3. Replay the exact user call with the header:
-curl -H "X-Debug-Request-Id: debug-abc123" https://your-service/api/orders/42
-#    → only THIS request hits the breakpoint; production traffic continues
+docker pull ghcr.io/manish-9211/jdwp-debug-server:latest
 ```
 
-## Security model
+## Features
 
-Read the full model in [`docs/security.md`](docs/security.md). The short version:
+### Non-blocking breakpoints
+Set breakpoints that only pause requests carrying your `X-Debug-Request-Id` header. All other traffic flows through untouched — verified against live Kubernetes clusters.
 
-| Layer | Control |
-|---|---|
-| Network | JDWP never published; ClusterIP-only + `kubectl port-forward`. NetworkPolicy limits who can reach 5005 in-cluster. |
-| RBAC | Least privilege: `get/list/watch pods`, `pods/portforward`, `pods/log`. **No exec, no write verbs.** |
-| Debug API | Optional bearer-token auth (`JDWP_API_TOKEN`) with constant-time comparison; localhost-only bind by default; explicit CORS allow-list. |
-| Desktop app | Context isolation + sandbox, strict CSP, navigation guards, kubectl terminal restricted to read-only allow-listed subcommands. |
-| Sessions | Automatic expiry, single-session-per-pod guards, full audit trail of every debug action. |
+### Logpoints
+Trace without pausing: `{var}` template tokens render local variable values into the log stream at any line, with optional conditions.
 
-> **Warning:** JDWP itself is an unencrypted protocol. Always tunnel it (SSH/kubectl port-forward/VPN) — never expose port 5005 of a production JVM to a network you don't fully trust.
+### Expression conditions
+Breakpoint conditions support comparisons (`>`, `<`, `>=`, `<=`, `==`, `!=`), boolean literals, string literals, numeric operands, and logical operators (`&&`, `||`) over in-scope variables.
+
+### Hit-count gates
+"Break after N hits" — skip warmup requests and catch the one that matters.
+
+### Per-breakpoint control
+Enable/disable individual breakpoints without removing them; mute/unmute globally.
+
+### Drop frame
+Rewind execution to the last application frame and re-run it.
+
+### TimeLens — request causality recorder
+Mark 2–5 lines once; every matching request gets its entire journey recorded as an ordered timeline with delta-timing and full variable state at each step. Zero pausing.
+
+### Panic Stop
+One button: resume all threads, remove all breakpoints, detach from VM. Leaves production exactly as found.
+
+### Live container logs
+NDJSON socket appender streams application logs from inside containers to the debug client — no agent injection needed for Docker targets.
+
+### Kubernetes attach
+Context discovery → pod discovery → port-forward → attach. Works with any cluster your kubeconfig can reach.
+
+### Services browser
+Connect GitHub or Bitbucket tokens to list repositories, match them to running pods by name, and jump straight to debugging.
+
+### AI-ready via MCP
+Two MCP servers expose 69 total tools so AI IDEs can drive the entire debugger programmatically.
+
+### Security-first defaults
+Token auth with constant-time comparison and brute-force lockout · CIDR target allow-list · idle-session watchdog · audit JSONL · secret redaction · localhost bind · locked-down CORS · least-privilege RBAC · sandboxed Electron.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — components, data flow, design decisions
-- [Security model](docs/security.md) — threat model and hardening guide
-- [Production debugging](docs/production-debugging.md) — filter-lib & dynamic-agent rollouts
-- [client README](client/README.md) · [k8s-debug README](k8s-debug/README.md) · [MCP server](jdwp-mcp/README.md)
+| Document | Contents |
+|----------|----------|
+| [Architecture](docs/architecture.md) | Components, data flow, design decisions (with diagrams) |
+| [Security model](docs/security.md) | Threat model, hardening guide, controls reference |
+| [API reference](docs/api-reference.md) | Every REST endpoint with parameters and examples |
+| [Production debugging](docs/production-debugging.md) | Filter-lib & dynamic-agent rollout guide |
+| [Environment variables](docs/environment-vars.md) | All configuration knobs in one table |
+| [Contributing](CONTRIBUTING.md) | How to build, test, and submit changes |
+| [Changelog](CHANGELOG.md) | Release history |
+
+## Prove it yourself (live cluster, one command)
+
+```powershell
+powershell -File scripts/e2e-live-debug.ps1
+```
+
+Expected output ends with `ALL CHECKS PASSED`, having verified:
+1. Pods reach `Running` in a real Kubernetes cluster
+2. Debugger attaches through the port-forward tunnel
+3. Untagged HTTP requests complete normally (**never blocked**)
+4. Tagged request suspends **inside the pod**
+5. Variables readable from suspended pod thread
+6. Resume completes the request
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| Connection refused on 5005 | Container not running or port not forwarded — `docker ps`, then re-check `kubectl port-forward` |
-| "Ping OK but JDWP attach fails" | Another process holds 8083, or client runs inside Docker while Studio expects host networking |
-| Breakpoint never hits | Class not loaded yet — trigger the endpoint once, or use `jdwp_trigger_class_loading` |
-| Variables show `<unavailable>` | Target compiled without debug info; build with `-g` (Spring Boot does by default) |
+| Symptom | Cause | Fix |
+|---|---|---|
+| Connection refused on 5005 | Target not running / port not forwarded | Check `docker ps` or re-run port-forward |
+| Attach fails, ping OK | Another debugger attached, or wrong port | Disconnect other IDEs; verify port-forward targets 5005 |
+| Breakpoint never hits | Class not loaded yet | Trigger the endpoint once, or set BP after first request |
+| Variables show `<unavailable>` | Compiled without debug info | Build with `-g` (Spring Boot does by default) |
+| Condition eval fails | Expression uses unsupported syntax | Supported: vars, fields, no-arg methods, comparisons, `&&`/`||` |
+| Logpoint entry missing | Target runs in Docker without socket appender | Add `ClientSocketAppender` to target's logback config |
 
 ## Contributing
 
-PRs welcome. Please keep the security posture intact: no new exec/write verbs in RBAC, no wildcard CORS, no secrets in code. Run `mvn verify` and the module builds before submitting.
+See [CONTRIBUTING.md](CONTRIBUTING.md). CI runs gitleaks + builds on every push — keep secrets out and tests passing.
 
 ## License
 

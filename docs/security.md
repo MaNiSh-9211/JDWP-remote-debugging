@@ -2,12 +2,48 @@
 
 JDWP remote debugging is inherently privileged: a debugger can read every variable in a running JVM. This document describes the controls that make that safe, and what **you** must configure when deploying.
 
+## Security layers
+
+```mermaid
+graph TB
+    subgraph "Network"
+        GW["API Gateway<br/>TLS + distributed rate limiting"]
+    end
+    subgraph "Debug Client"
+        RL["Auth Rate Limiter<br/>5 fails/IP → 5min lockout"]
+        TOKEN["Token Filter<br/>constant-time X-Debug-Token"]
+        ALLOW["Target Allow-List<br/>CIDR/hostname match"]
+        AUDIT["Audit Trail JSONL"]
+        REDACT["Secret Redactor"]
+        WATCHDOG["Idle Watchdog<br/>auto-disconnect after N min"]
+    end
+    subgraph "Kubernetes RBAC"
+        RBAC["get/list/watch pods<br/>create portforward<br/>get pods/log<br/>NO exec · NO write verbs"]
+    end
+    subgraph "Electron"
+        SANDBOX["contextIsolation + sandbox"]
+        CSP["Strict CSP (no unsafe-inline in prod)"]
+        KCTL["kubectl allow-list (read-only)"]
+    end
+    GW --> RL --> TOKEN --> ALLOW --> API["REST API"] --> WATCHDOG
+    AUDIT -.->|records all actions| API
+    REDACT -.->|masks secrets| LOGS["Log stream & variables"]
+```
+
 ## Threat model
 
 | Threat | Mitigation |
 |---|---|
 | Attacker reaches JDWP port of a production JVM | JDWP is never published. ClusterIP-only + on-demand `kubectl port-forward`. NetworkPolicy restricts in-cluster access to 5005. |
-| Rogue process on the developer machine calls the Debug Client API | Client binds to `localhost` by default; set `JDWP_API_TOKEN` to require authenticated calls; CORS is an explicit allow-list (no `*`). |
+| Rogue process on developer machine calls Debug Client API | Client binds `localhost` by default; `JDWP_API_TOKEN` enables constant-time token auth; CORS is explicit allow-list (no `*`). |
+| Token brute-force | Per-IP rate limiter: 5 failures in 60s → 5-minute 429 lockout (constant-time compare). At scale, API gateway adds distributed rate limiting. |
+| Debugger left attached to prod indefinitely | Idle watchdog auto-disconnects after 30 min (configurable), resuming suspended threads first. |
+| Debugger used as SSRF pivot to internal JVMs | Target allow-list (`JDWP_ALLOWED_TARGETS`) restricts connect destinations by hostname/CIDR. |
+| Secrets leak through captured variables/logs | SecretRedactor masks JWT/JWE, AWS keys, auth headers, credential fields before values reach UI/logs. Applied at all StringReference sites + log ingestion. |
+| No trace of who debugged what | Audit trail (`logs/audit.jsonl`) records connect/disconnect/breakpoint events with timestamps. |
+| Compromised renderer in Electron app | contextIsolation + sandbox, strict CSP, navigation guards, IPC allow-lists, kubectl restricted to read-only verbs. |
+| Renderer tricks kubectl into destructive actions | Allow-list of read-only subcommands only; shell spawning disabled; metacharacters rejected. |
+| Service account abused for lateral movement | RBAC grants only pods get/list/watch + portforward create + pods/log get. **No exec, no write verbs, no secrets access.** |
 | Compromised renderer (XSS) in the Electron app | Context isolation + sandbox enabled, strict CSP, navigation guards, `setWindowOpenHandler` denies all popups, IPC handlers validate inputs. |
 | Renderer tricks kubectl into destructive actions | The cluster terminal only executes an allow-list of read-only subcommands (`get`, `describe`, `logs`, …). Shell spawning is disabled and metacharacters are rejected. |
 | Service account abused for lateral movement | RBAC grants only `pods get/list/watch`, `pods/portforward create`, `pods/log get`. **No exec, no write verbs, no secrets access.** |
