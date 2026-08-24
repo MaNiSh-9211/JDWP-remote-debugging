@@ -197,6 +197,7 @@ Token auth with constant-time comparison and brute-force lockout · CIDR target 
 | Document | Contents |
 |----------|----------|
 | [Architecture](docs/architecture.md) | Components, data flow, design decisions, 10 diagrams |
+| [Getting started tutorial](docs/tutorial.md) | Step-by-step walkthrough with expected output |
 | [Diagrams](docs/diagrams.md) | 10 Mermaid diagrams covering every subsystem |
 | [Performance](docs/performance.md) | Real measured benchmarks from live cluster tests |
 | [Security model](docs/security.md) | Threat model, hardening guide, controls reference |
