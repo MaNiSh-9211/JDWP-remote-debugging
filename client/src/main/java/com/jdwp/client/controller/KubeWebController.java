@@ -10,6 +10,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
 
 /**
  * Web-UI cluster access: contexts, namespaces, pods, logs and port-forward
@@ -121,6 +124,25 @@ public class KubeWebController {
     public ResponseEntity<Map<String, Object>> stopForward(@PathVariable int localPort) {
         kube.stopForward(localPort);
         return ResponseEntity.ok(Map.of("success", true));
+    }
+
+    @PostMapping("/kubeconfig")
+    public ResponseEntity<Map<String, Object>> uploadKubeconfig(@RequestBody Map<String, Object> body) {
+        try {
+            String content = String.valueOf(body.get("content") == null ? "" : body.get("content"));
+            if (content.isBlank() || content.length() > 512 * 1024) throw new IllegalArgumentException("Invalid kubeconfig content");
+            if (!content.contains("clusters:") && !content.contains("apiVersion")) throw new IllegalArgumentException("Does not look like a kubeconfig");
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            String name = "jdwp-kc-" + Integer.toHexString(Arrays.hashCode(hash)) + ".yaml";
+            Path dir = Path.of(System.getProperty("java.io.tmpdir"), "jdwp-kubeconfigs");
+            Files.createDirectories(dir);
+            Path file = dir.resolve(name);
+            Files.writeString(file, content);
+            return ResponseEntity.ok(Map.of("success", true, "path", file.toString()));
+        } catch (Exception e) {
+            return fail(e);
+        }
     }
 
     // helpers --------------------------------------------------------------

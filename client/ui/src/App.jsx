@@ -948,602 +948,328 @@ function App() {
     callServerApi(customEndpoint.path, customEndpoint.method, body)
   }
 
+
+  // ---- Layout nav ----
+  const [nav, setNav] = useState('session')
+  const [toastMsg, setToastMsg] = useState(null)
+  const toast = (text) => { setToastMsg({ text }); setTimeout(() => setToastMsg(null), 3500) }
+
+  // ---- TimeLens recorder ----
+  const [lensLocs, setLensLocs] = useState('')
+  const [lensSteps, setLensSteps] = useState([])
+  const [lensRec, setLensRec] = useState(false)
+  const lensKeyRef = useRef('flight-' + Date.now().toString(36))
+  const lensStart = async () => {
+    const locs = lensLocs.split('\n').map(s => s.trim()).filter(Boolean)
+    if (!locs.length || !connected) { setMessage('Attach and add probes first'); return }
+    try {
+      await axios.post(API_BASE + '/recorder/start', { sessionKey: lensKeyRef.current, locations: locs })
+      setLensRec(true)
+    } catch (e) { setMessage('Recorder failed') }
+  }
+  const lensStop = async () => {
+    try { await axios.post(API_BASE + '/recorder/' + encodeURIComponent(lensKeyRef.current) + '/stop') } catch {}
+    setLensRec(false)
+  }
+  const lensRefresh = async () => {
+    try {
+      const r = await axios.get(API_BASE + '/recorder/' + encodeURIComponent(lensKeyRef.current))
+      setLensSteps(r.data.steps || []); setLensRec(!!r.data.recording)
+    } catch {}
+  }
+
+  // ---- Cluster (server-side kubectl via /api/k8s) ----
+  const [ctxList, setCtxList] = useState([])
+  const [ctx, setCtx] = useState('')
+  const [nsList, setNsList] = useState([])
+  const [ns, setNs] = useState('default')
+  const [reach, setReach] = useState(null)
+  const [k8sPods, setK8sPods] = useState([])
+  const [kubeconfigPath, setKubeconfigPath] = useState(sessionStorage.getItem('jdwp-kc-path') || '')
+  const [podLogsUi, setPodLogsUi] = useState(null)
+
+  const K8S = API_BASE.replace('/api/debug', '') + '/api/k8s'
+  const KC = kubeconfigPath.trim() ? '&kubeconfig=' + encodeURIComponent(kubeconfigPath.trim()) : ''
+  const CTX = ctx.trim() ? '&context=' + encodeURIComponent(ctx.trim()) : ''
+
+  const loadContexts = async () => {
+    try {
+      const r = await axios.get(K8S + '/contexts' + KC.replace('&kubeconfig=', '?kubeconfig='))
+      setCtxList(r.data.contexts || [])
+      if (!ctx && r.data.contexts?.length) setCtx(r.data.contexts[0])
+    } catch { setCtxList([]) }
+  }
+  const loadNamespaces = async () => {
+    try {
+      const r = await axios.get(K8S + '/namespaces' + (KC || CTX ? '?' + (KC + CTX).replace(/^&/, '') : ''))
+      setNsList(r.data.namespaces || []); setReach(true)
+    } catch { setReach(false) }
+  }
+  const discoverK8sPods = async () => {
+    try {
+      const r = await axios.get(K8S + '/pods?' + (KC + CTX + '&namespace=' + encodeURIComponent(ns.trim() || 'default')).replace(/^&/, ''))
+      setK8sPods((r.data.pods || []).map(p2 => ({ name: p2.name, phase: p2.phase, running: p2.running, jdwpPort: p2.jdwpPort })))
+    } catch { setK8sPods([]) }
+  }
+  const attachViaTunnel = async (podName, jdwpPortNum) => {
+    if (!connected) return setMessage && setMessage('Attach first')
+    try {
+      await axios.post(API_BASE + '/disconnect')
+      const f = await axios.post(K8S + '/forward', {
+        ...(KC ? { kubeconfig: decodeURIComponent(KC.replace('&kubeconfig=', '')) } : {}),
+        ...(CTX ? { context: decodeURIComponent(CTX.replace('&context=', '')) } : {}),
+        namespace: ns.trim() || 'default', pod: podName,
+        remotePort: jdwpPortNum > 0 ? jdwpPortNum : 5005, localPort: 5005,
+      })
+      if (!(f.data.success || f.data.reused)) throw new Error(f.data.message || 'forward failed')
+      await new Promise(r => setTimeout(r, 1500))
+      const c = await axios.post(API_BASE + '/connect?host=localhost&port=5005')
+      if (c.data.success) { setConnected(true); await refreshThreads() }
+      else throw new Error(c.data.message || 'attach failed')
+    } catch (e) { setMessage('Tunnel error: ' + e.message) }
+  }
+  const fetchK8sPodLogsWeb = async (podName) => {
+    try {
+      const r = await axios.get(K8S + '/logs', { params: { namespace: ns.trim() || 'default', pod: podName, tail: 100 } })
+      setPodLogsUi({ pod: podName, text: r.data.logs || '(empty)' })
+    } catch { setPodLogsUi({ pod: podName, text: 'failed' }) }
+  }
+
+  // ---- Panic stop ----
+  const panicStop = async () => {
+    if (!window.confirm('PANIC STOP\n\nResume all threads, remove all breakpoints/watchpoints and detach?')) return
+    setLoading(true)
+    try {
+      const p = await axios.post(API_BASE + '/panic')
+      setConnected(false); setThreads([]); setSelectedThread(null); setFrames([]); setVariables({})
+      setMessage('PANIC: resumed ' + (p.data.threadsResumed ?? 0) + ', removed ' + (p.data.breakpointsRemoved ?? 0) + ' BPs, detached=' + p.data.detached)
+      setTimeout(() => setMessage(''), 6000)
+    } catch (e) { setMessage('Panic failed: ' + (e.response?.data?.message || e.message)) }
+    finally { setLoading(false) }
+  }
+
+
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>🔍 JDWP Remote Debugger</h1>
-        <div className="connection-panel">
-          {!connected ? (
-            <div className="connect-form">
-              <input
-                type="text"
-                placeholder="Host"
-                value={host}
-                onChange={(e) => setHost(e.target.value)}
-                disabled={loading}
-              />
-              <input
-                type="number"
-                placeholder="Port"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-                disabled={loading}
-              />
-              <button onClick={handleConnect} disabled={loading}>
-                {loading ? 'Connecting...' : 'Connect'}
-              </button>
-              <input
-                type="password"
-                placeholder="API token (if set on client)"
-                value={apiToken}
-                onChange={(e) => setApiTokenState(e.target.value)}
-                disabled={loading}
-                style={{ marginLeft: '0.5rem', maxWidth: 220 }}
-              />
-            </div>
-          ) : (
-            <div className="connected-status">
-              <span className="status-indicator connected">● Connected</span>
-              <button onClick={handleDisconnect} disabled={loading}>
-                Disconnect
-              </button>
-            </div>
+    <div className="shell">
+      <aside className="rail">
+        <div className="brand">JD</div>
+        {[['session','Session','⚡'],['breakpoints','Breakpoints','⏸'],['threads','Threads & Scope','🧵'],['logs','Live Logs','📜'],['timelens','TimeLens','⏱'],['cluster','Cluster','☸']].map(([id,label,icon]) => (
+          <button key={id} className={`rail-btn ${nav===id?'active':''}`} onClick={() => setNav(id)}>
+            <span className="rail-icon">{icon}</span>
+            <span className="rail-label">{label}</span>
+          </button>
+        ))}
+        <div style={{ flex: 1 }} />
+      </aside>
+
+      <div className="main">
+        <header className="topbar">
+          <h1>{nav === 'session' ? 'Session' : nav === 'breakpoints' ? 'Breakpoints' : nav === 'threads' ? 'Threads & Scope' : nav === 'logs' ? 'Live Logs' : nav === 'timelens' ? 'TimeLens' : 'Cluster'}</h1>
+          <div className="topbar-pills">
+            <span className={`pill ${connected ? 'pill-ok' : 'pill-off'}`}>{connected ? `● ${host}:${port}` : '○ detached'}</span>
+          </div>
+          {connected && (
+            <button type="button" className="btn btn--sm" style={{ background: '#f85149', color: '#fff', fontWeight: 700 }} onClick={panicStop}>PANIC</button>
           )}
-        </div>
-      </header>
+        </header>
+        {toastMsg && (
+          <div className="banner">{toastMsg.text}</div>
+        )}
+        <main className="content-area">
 
-      {message && (
-        <div className={`message ${message.includes('Error') ? 'error' : 'success'}`}>
-          {message}
-        </div>
-      )}
-
-      {/* Debug Control Panel - Shows when thread is suspended */}
-      {connected && selectedThread && threads.find(t => t.name === selectedThread && t.isSuspended) && (
-        <div className="debug-control-panel">
-          <div className="debug-control-header">
-            <h3>🔴 Debugging: {selectedThread}</h3>
-            <span className="debug-status">PAUSED AT BREAKPOINT</span>
-          </div>
-          <div className="debug-control-buttons">
-            <button
-              onClick={() => handleStepOver(selectedThread)}
-              className="debug-btn step-over"
-              title="Execute current line and move to next line"
-            >
-              ⏭ Step Over (F10)
-            </button>
-            <button
-              onClick={() => handleStepInto(selectedThread)}
-              className="debug-btn step-into"
-              title="Step into method call"
-            >
-              ⬇ Step Into (F11)
-            </button>
-            <button
-              onClick={() => handleStepOut(selectedThread)}
-              className="debug-btn step-out"
-              title="Step out of current method"
-            >
-              ⬆ Step Out (Shift+F11)
-            </button>
-            <button
-              onClick={handleContinue}
-              className="debug-btn resume"
-              title="Continue execution until next breakpoint (resumes all threads)"
-            >
-              ▶ Continue (F5)
-            </button>
-            <button
-              onClick={async () => {
-                try {
-                  const res = await axios.post(`${API_BASE}/threads/${encodeURIComponent(selectedThread)}/reset-frame`)
-                  setMessage(`Dropped ${res.data.poppedFrames ?? ''} frame(s) — rewound to last app frame`)
-                  await handleThreadClick(selectedThread)
-                } catch (error) {
-                  setMessage('Drop frame failed: ' + (error.response?.data?.message || error.message))
-                  setTimeout(() => setMessage(''), 4000)
-                }
-              }}
-              className="debug-btn"
-              title="Rewind: pop back to the last application frame and re-run it"
-            >
-              ↩ Drop Frame
-            </button>
-          </div>
-        </div>
-      )}
-
-      {connected && (
-        <div className="main-content">
-          <div className="left-panel">
-            <div className="panel">
-              <div className="panel-header">
-                <h2>Breakpoints ({breakpoints.length})</h2>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <button onClick={refreshBreakpoints} className="refresh-btn">🔄</button>
-                  {breakpoints.length > 0 && (
-                    <button 
-                      onClick={handleRemoveAllBreakpoints} 
-                      className="remove-all-btn"
-                      title="Remove all breakpoints"
-                    >
-                      🗑️ Remove All
-                    </button>
-                  )}
+          {/* SESSION */}
+          {nav === 'session' && (
+            <>
+              <div className="card">
+                <div className="card-head">Target VM</div>
+                <div className="form-grid">
+                  <label>Host</label>
+                  <input value={host} onChange={(e) => setHost(e.target.value)} disabled={connected} />
+                  <label>Port</label>
+                  <input value={port} onChange={(e) => setPort(e.target.value)} disabled={connected} />
+                </div>
+                <div className="toolbar">
+                  {!connected
+                    ? <button onClick={handleConnect} disabled={loading} className="primary">Attach to JVM</button>
+                    : <button onClick={handleDisconnect} disabled={loading} className="primary">Detach</button>}
                 </div>
               </div>
-              
-              {/* API-based Breakpoint Setting - Always show when connected */}
-              <div className="api-breakpoints-section">
-                <h3 style={{ margin: '0.5rem 0', color: '#4ec9b0', fontSize: '0.95rem' }}>
-                  📍 Set Breakpoints for API (Auto-set multiple breakpoints):
-                </h3>
-                {apiBreakpointsConfig && apiBreakpointsConfig.apiEndpoints ? (
-                  <>
-                    <div className="api-breakpoint-selector">
-                      <select
-                        value={selectedApiForBreakpoints}
-                        onChange={(e) => setSelectedApiForBreakpoints(e.target.value)}
-                        className="api-select"
-                      >
-                        <option value="">Select API endpoint...</option>
-                        {Object.entries(apiBreakpointsConfig.apiEndpoints).map(([apiName, config]) => (
-                          <option key={apiName} value={apiName}>
-                            {apiName} - {config.description} ({config.breakpoints?.length || 0} breakpoints)
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={() => handleSetBreakpointsForApi(selectedApiForBreakpoints)}
-                        disabled={!selectedApiForBreakpoints}
-                        className="set-api-breakpoints-btn"
-                      >
-                        Set All Breakpoints
-                      </button>
-                    </div>
-                    {selectedApiForBreakpoints && apiBreakpointsConfig.apiEndpoints[selectedApiForBreakpoints] && (
-                      <div className="api-breakpoints-preview">
-                        <div style={{ fontSize: '0.85rem', color: '#858585', marginTop: '0.5rem' }}>
-                          Breakpoints to be set:
-                        </div>
-                        {apiBreakpointsConfig.apiEndpoints[selectedApiForBreakpoints].breakpoints.map((bp, idx) => (
-                          <div key={idx} className="breakpoint-preview-item">
-                            <span className="bp-preview-class">{bp.className}</span>
-                            <span className="bp-preview-line">Line {bp.lineNumber}</span>
-                            <span className="bp-preview-desc">{bp.description}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div style={{ padding: '0.5rem', color: '#858585', fontSize: '0.85rem', fontStyle: 'italic' }}>
-                    Loading API breakpoints configuration...
-                  </div>
-                )}
+              <div className="card">
+                <div className="card-head">Status</div>
+                <div className="status-row"><Pill ok={connected} text={connected ? 'attached' : 'not attached'} /></div>
               </div>
-              
-              <div className="breakpoint-list">
-                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                  <button onClick={handleMuteAll} disabled={!connected} className="remove-btn" style={{ flex: 1, background: bpMuted ? '#4ec9b0' : '#3c3c3c' }}>
-                    {bpMuted ? 'Unmute all' : 'Mute all'}
-                  </button>
-                  <button onClick={handleExportBps} disabled={!breakpoints.length} className="remove-btn" style={{ flex: 1 }} title="Download breakpoints as JSON">
-                    Export
-                  </button>
-                  <label className="remove-btn" style={{ flex: 1, cursor: 'pointer', textAlign: 'center' }} title="Import breakpoints JSON">
+            </>
+          )}
+
+          {/* BREAKPOINTS */}
+          {nav === 'breakpoints' && (
+            <>
+              <Card title={`Breakpoints (${breakpoints.length})`}
+                right={<Btn ghost onClick={handleMuteAll}>{bpMuted ? 'Unmute all' : 'Mute all'}</Btn>}>
+                <div className="form-grid">
+                  <label>Type</label>
+                  <select id="bp-type" defaultValue="line">
+                    <option value="line">Line</option>
+                    <option value="logpoint">Logpoint</option>
+                    <option value="expression">Expression</option>
+                    <option value="request">Request-ID</option>
+                  </select>
+                  <label>Class</label>
+                  <input id="bp-class" placeholder="com.example.Foo" defaultValue={persistentClassName} />
+                  <label>Line</label>
+                  <input id="bp-line" placeholder="31" />
+                  <label>Log message (logpoint)</label>
+                  <input id="bp-logmsg" placeholder="order {id} amount={amount}" />
+                  <label>Condition</label>
+                  <input id="bp-cond" placeholder="amount > 1000" />
+                  <label>Request ID</label>
+                  <input id="bp-reqid" placeholder="X-Debug-Request-Id value" />
+                  <label>Min hits</label>
+                  <input id="bp-minhits" placeholder="e.g. 5" />
+                </div>
+                <Btn primary onClick={handleSingleAdd}>Add breakpoint</Btn>
+                <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+                  <Btn ghost onClick={handleExportBps} disabled={!breakpoints.length}>Export JSON</Btn>
+                  <label className="btn btn-ghost" style={{ cursor: 'pointer' }}>
                     Import
-                    <input
-                      ref={importFileRef}
-                      type="file"
-                      accept=".json,application/json"
-                      style={{ display: 'none' }}
-                      onChange={handleImportFile}
-                    />
+                    <input type="file" accept=".json" style={{ display: 'none' }} onChange={handleImportFile} />
                   </label>
                 </div>
-                {breakpoints.length === 0 ? (
-                  <div className="info-text">No breakpoints set</div>
-                ) : (
-                  breakpoints.map((bp) => {
-                    const off = bp.disabled
-                    return (
-                      <div key={bp.id || bp.location} className="breakpoint-item" style={{ opacity: off ? 0.45 : 1 }}>
-                        <span className="breakpoint-location">
-                          {bp.logMessage ? `📝 ${bp.location}` : bp.condition ? `❓ ${bp.location}` : bp.location}
-                          {bp.logMessage && <span style={{ color: '#858585' }}> · {bp.logMessage}</span>}
-                          {bp.condition && <span style={{ color: '#858585' }}> · if {bp.condition}</span>}
-                          {bp.minHits != null && <span style={{ color: '#858585' }}> · after {bp.minHits}</span>}
-                        </span>
-                        <button
-                          onClick={() => handleToggleBp(bp.id, !!off)}
-                          className="remove-btn"
-                          title={off ? 'Enable' : 'Disable'}
-                        >
-                          {off ? '◌' : '⏻'}
-                        </button>
-                        <button
-                          onClick={() => handleRemoveBreakpoint(bp.id)}
-                          className="remove-btn"
-                          title="Remove this breakpoint"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    )
-                  })
-                )}
-              </div>
-              
-              <div className="add-breakpoint">
-                <h3 style={{ margin: '0.5rem 0', color: '#4ec9b0', fontSize: '0.95rem' }}>
-                  ➕ Add Breakpoint:
-                </h3>
-                <select
-                  value={bpTypeUi}
-                  onChange={(e) => setBpTypeUi(e.target.value)}
-                  style={{ marginBottom: '0.5rem', padding: '0.5rem', borderRadius: 4, background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #3c3c3c' }}
-                >
-                  <option value="line">Line (suspend)</option>
-                  <option value="logpoint">Logpoint (trace, no pause)</option>
-                  <option value="expression">Expression condition</option>
-                  <option value="request">Request-ID scoped</option>
-                </select>
-                <input
-                  type="text"
-                  id="bp-class"
-                  placeholder="Class (e.g., com.jdwp.server.controller.UserController)"
-                  value={persistentClassName}
-                  onChange={(e) => setPersistentClassName(e.target.value)}
-                />
-                <input
-                  type="text"
-                  id="bp-line"
-                  placeholder="Line number - e.g., 31"
-                />
-                {bpTypeUi === 'logpoint' && (
-                  <input
-                    type="text"
-                    id="bp-logmsg"
-                    placeholder='Log message with {var} tokens - e.g., "order {id} amount={amount}"'
-                  />
-                )}
-                {(bpTypeUi === 'expression' || bpTypeUi === 'logpoint') && (
-                  <input
-                    type="text"
-                    id="bp-cond"
-                    placeholder={bpTypeUi === 'logpoint' ? 'Condition (optional) - log only when true, e.g. amount > 1000' : 'Condition - e.g. a > 10 && status == "ok"'}
-                  />
-                )}
-                {bpTypeUi === 'request' && (
-                  <input
-                    type="text"
-                    id="bp-request-id"
-                    placeholder="X-Debug-Request-Id value to scope suspension"
-                  />
-                )}
-                {bpTypeUi === 'line' && (
-                  <input
-                    type="text"
-                    id="bp-minhits"
-                    placeholder="Break after N hits (optional)"
-                  />
-                )}
-                <button onClick={handleSingleAdd}>
-                  {bpTypeUi === 'logpoint' ? 'Add Logpoint'
-                    : bpTypeUi === 'expression' ? 'Add Expression BP'
-                    : bpTypeUi === 'request' ? 'Add Request-Scoped BP'
-                    : minHitsPresent() ? `Add Hit-Count BP`
-                    : 'Add Line Breakpoint'}
-                </button>
-              </div>
-            </div>
-          </div>
+              </Card>
+              {breakpoints.length > 0 && (
+                <Card title={`Active (${breakpoints.length})`}>
+                  {breakpoints.map((b) => (
+                    <div key={b.id || b.location} className="list-row">
+                      <span className="mono small grow">{b.logMessage ? '📝 ' : b.condition ? '❓ ' : ''}{b.id || b.location}</span>
+                      <Btn ghost onClick={() => handleToggleBp(b.id, !!b.disabled)}>{b.disabled ? 'enable' : 'disable'}</Btn>
+                      <Btn ghost onClick={() => handleRemoveBp(b.id)}>✕</Btn>
+                    </div>
+                  ))}
+                </Card>
+              )}
+            </>
+          )}
 
-          <div className="right-panel">
-            {selectedThread && (
-              <>
-                {/* Current Source Location - Always show when thread is suspended */}
-                {selectedThread && threads.find(t => t.name === selectedThread && t.isSuspended) && (
-                  currentLocation ? (
-                    <div className="panel source-location-panel">
-                      <div className="panel-header">
-                        <h2>📍 Current Code Location</h2>
-                        <button onClick={() => handleThreadClick(selectedThread)} className="refresh-btn" title="Refresh location">🔄</button>
-                      </div>
-                      <div className="source-location-content">
-                        <div className="location-line">
-                          <span className="location-label">Class:</span>
-                          <span className="location-value">{currentLocation.className}</span>
-                        </div>
-                        <div className="location-line">
-                          <span className="location-label">Method:</span>
-                          <span className="location-value">{currentLocation.methodName}()</span>
-                        </div>
-                        <div className="location-line highlight">
-                          <span className="location-label">Line:</span>
-                          <span className="location-value highlight-line">Line {currentLocation.lineNumber}</span>
-                        </div>
-                        {currentLocation.sourceName && (
-                          <div className="location-line">
-                            <span className="location-label">Source File:</span>
-                            <span className="location-value">{currentLocation.sourceName}</span>
-                          </div>
-                        )}
-                        {currentLocation.className && (
-                          currentLocation.className.startsWith('org.apache.') || 
-                          currentLocation.className.startsWith('org.springframework.') ||
-                          currentLocation.className.startsWith('java.') ||
-                          currentLocation.className.startsWith('jdk.internal.')
-                        ) ? (
-                          <div className="location-note" style={{ marginTop: '0.5rem', padding: '0.5rem', fontSize: '0.85rem', color: '#ff9800', fontStyle: 'italic', backgroundColor: '#fff3cd', borderRadius: '4px' }}>
-                            ⚠️ Thread is in framework code. Use Step Over/Into to reach your application code.
-                          </div>
-                        ) : (
-                          <div className="location-note" style={{ marginTop: '0.5rem', padding: '0.5rem', fontSize: '0.85rem', color: '#858585', fontStyle: 'italic' }}>
-                            💡 To view source code, open: {currentLocation.className.replace(/\./g, '/')}.java at line {currentLocation.lineNumber}
-                          </div>
-                        )}
-                      </div>
+          {/* THREADS */}
+          {nav === 'threads' && (
+            <>
+              <Card title={`Threads (${threads.length})`}>
+                {!threads.length ? <Empty>No threads.</Empty> :
+                  threads.map((t) => (
+                    <div key={t.name} className={`list-row ${t.suspended ? 'suspended' : ''}`}>
+                      <span>{t.suspended ? '⏸' : '▶'} </span>
+                      <span className="mono small grow">{t.name}</span>
+                      {t.suspended && <Btn ghost onClick={() => handleThreadClick(t.name)}>inspect</Btn>}
                     </div>
-                  ) : (
-                    <div className="panel source-location-panel" style={{ borderColor: '#858585', opacity: 0.7 }}>
-                      <div className="panel-header">
-                        <h2>📍 Current Code Location</h2>
-                        <button onClick={() => handleThreadClick(selectedThread)} className="refresh-btn" title="Refresh location">🔄</button>
+                  ))}
+              </Card>
+              {selectedThread && frames && frames.length > 0 && (
+                <Card title={`Stack frames — ${selectedThread}`}>
+                  <div className="stack-frames">
+                    {frames.map((f, i) => (
+                      <div key={i} className="frame-row mono small">
+                        {i}. {f.className?.split('.').pop()}.{f.methodName}:{f.lineNumber}
                       </div>
-                      <p style={{ color: '#858585', fontStyle: 'italic', padding: '1rem' }}>
-                        Loading location... Click refresh to update.
-                      </p>
-                    </div>
-                  )
-                )}
-                
-                {/* Debug Features - Available when thread is suspended */}
-                {selectedThread && threads.find(t => t.name === selectedThread && t.isSuspended) && (
-                  <>
-                    {/* Debug Controls Panel */}
-                    <div className="panel debug-features-panel">
-                      <div className="panel-header">
-                        <h2>🛠️ Debug Features {breakpointHit ? '(Breakpoint Hit)' : '(Thread Suspended)'}</h2>
-                      </div>
-                      <div className="debug-features-grid">
-                        <div className="debug-feature-item">
-                          <h4>Step Operations</h4>
-                          <div className="debug-feature-buttons">
-                            <button
-                              onClick={() => handleStepOver(selectedThread)}
-                              className="debug-feature-btn step-over"
-                              title="Execute current line and move to next line"
-                            >
-                              ⏭ Step Over
-                            </button>
-                            <button
-                              onClick={() => handleStepInto(selectedThread)}
-                              className="debug-feature-btn step-into"
-                              title="Step into method call"
-                            >
-                              ⬇ Step Into
-                            </button>
-                            <button
-                              onClick={() => handleStepOut(selectedThread)}
-                              className="debug-feature-btn step-out"
-                              title="Step out of current method"
-                            >
-                              ⬆ Step Out
-                            </button>
-                          </div>
-                        </div>
-                        <div className="debug-feature-item">
-                          <h4>Execution Control</h4>
-                          <div className="debug-feature-buttons">
-            <button
-              onClick={async () => {
-                await handleContinue()
-                setBreakpointHit(false) // Reset when continuing
-                setCurrentLocation(null) // Clear location
-                setVariables({}) // Clear variables
-                // Remove from processed threads so we can detect next breakpoint
-                if (selectedThread) {
-                  processedThreadsRef.current.delete(selectedThread)
-                }
-              }}
-              className="debug-feature-btn resume"
-              title="Continue execution until next breakpoint"
-            >
-              ▶ Continue
-            </button>
-                            <button
-                              onClick={() => {
-                                handleThreadClick(selectedThread)
-                                setMessage('✓ Refreshed variables and location')
-                                setTimeout(() => setMessage(''), 2000)
-                              }}
-                              className="debug-feature-btn refresh"
-                              title="Refresh variables and source location"
-                            >
-                              🔄 Refresh
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    {/* Evaluate Expression */}
-                    <div className="panel evaluate-panel">
-                      <div className="panel-header">
-                        <h2>🔍 Evaluate Expression</h2>
-                      </div>
-                      <div className="evaluate-form">
-                        <input
-                          type="text"
-                          placeholder="Enter expression (e.g., variableName, variableName.field, variableName.method())"
-                          value={evaluateExpression}
-                          onChange={(e) => setEvaluateExpression(e.target.value)}
-                          onKeyPress={(e) => {
-                            if (e.key === 'Enter') {
-                              handleEvaluateExpression(selectedThread, evaluateExpression)
-                            }
-                          }}
-                          className="evaluate-input"
-                        />
-                        <button
-                          onClick={() => handleEvaluateExpression(selectedThread, evaluateExpression)}
-                          className="evaluate-btn"
-                          disabled={!evaluateExpression.trim()}
-                        >
-                          Evaluate
-                        </button>
-                      </div>
-                      {evaluateResult && (
-                        <div className={`evaluate-result ${evaluateResult.success ? 'success' : 'error'}`}>
-                          <div className="evaluate-result-label">
-                            {evaluateResult.success ? '✓ Result:' : '✗ Error:'}
-                          </div>
-                          <div className="evaluate-result-value">
-                            {evaluateResult.expression} = {evaluateResult.result}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-                
-                {/* Scope Variables - Auto-loaded when breakpoint hits */}
-                {Object.keys(variables).length > 0 && (
-                  <div className="panel variables-panel">
-                    <div className="panel-header">
-                      <h2>📊 Scope Variables (Current Location)</h2>
-                      <button onClick={() => handleThreadClick(selectedThread)} className="refresh-btn">🔄</button>
-                    </div>
-                    <div className="variables-grid">
-                      {Object.entries(variables).map(([key, value]) => (
-                        <div key={key} className="variable-item">
-                          <span className="var-name">{key}:</span>
-                          <span className="var-value">{String(value)}</span>
-                        </div>
-                      ))}
-                    </div>
+                    ))}
                   </div>
-                )}
-                {Object.keys(variables).length === 0 && selectedThread && threads.find(t => t.name === selectedThread && t.isSuspended) && (
-                  <div className="panel variables-panel" style={{ borderColor: '#858585', opacity: 0.7 }}>
-                    <div className="panel-header">
-                      <h2>📊 Scope Variables</h2>
-                      <button onClick={() => handleThreadClick(selectedThread)} className="refresh-btn">🔄</button>
-                    </div>
-                    <p style={{ color: '#858585', fontStyle: 'italic', padding: '1rem' }}>No variables available at this location. Thread may be in framework code. Try stepping to application code.</p>
-                  </div>
-                )}
-              </>
-            )}
+                </Card>
+              )}
+              {selectedThread && variables && Object.keys(variables).length > 0 && (
+                <Card title="Variables">
+                  <pre className="code-block small">{JSON.stringify(variables, null, 2).slice(0, 5000)}</pre>
+                </Card>
+              )}
+            </>
+          )}
 
-            <div className="panel">
-              <div className="panel-header">
-                <h2>Server API Endpoints</h2>
+          {/* LIVE LOGS */}
+          {nav === 'logs' && (
+            <Card title="Live target logs"
+              right={<Btn onClick={() => setLogs([])}>Clear</Btn>}>
+              {!connected && <Empty>Not attached — connect to see logs.</Empty>}
+              <div className="log-viewer mono">
+                {logs.map((l, i) => (
+                  <div key={i}>{l.timestamp ? `[${new Date(l.timestamp).toLocaleTimeString()}] ` : ''}{l.message || l.text || String(l)}</div>
+                ))}
+                {!logs.length && <Empty>No entries yet.</Empty>}
               </div>
-              <div className="api-test-panel">
-                <div className="endpoints-list">
-                  {endpoints.map(([endpoint, desc], idx) => {
-                    const [method, path] = endpoint.split(' ')
-                    return (
-                      <div key={idx} className="endpoint-item">
-                        <span className="endpoint-method">{method}</span>
-                        <span className="endpoint-path">{path}</span>
-                        <span className="endpoint-desc">{desc}</span>
-                        <button
-                          onClick={() => {
-                            if (method === 'GET' || method === 'DELETE') {
-                              callServerApi(path.replace('{id}', '1'), method)
-                            } else {
-                              const body = method === 'POST' 
-                                ? { name: 'Test User', email: 'test@example.com', age: 25 }
-                                : { name: 'Updated User', email: 'updated@example.com', age: 30 }
-                              callServerApi(path.replace('{id}', '1'), method, body)
-                            }
-                          }}
-                          disabled={apiLoading}
-                          className="api-btn-small"
-                        >
-                          Call
-                        </button>
-                      </div>
-                    )
-                  })}
+            </Card>
+          )}
+
+          {/* TIMELENS */}
+          {nav === 'timelens' && (
+            <Card title="TimeLens — request causality recorder">
+              <textarea rows={3} value={lensLocs} onChange={(e) => setLensLocs(e.target.value)}
+                placeholder={'com.example.Foo:31\ncom.example.Bar:88'} />
+              <div className="toolbar">
+                <Btn kind="primary" disabled={!connected} onClick={lensStart}>Start recording</Btn>
+                <Btn onClick={lensStop}>Stop</Btn>
+                <Btn ghost onClick={lensRefresh}>Refresh</Btn>
+              </div>
+              {lensSteps.map((s, i) => (
+                <div key={`${s.timestamp}-${i}`} className="step">
+                  <b>#{i + 1}</b> {s.class}.{s.method}:{s.line}
+                  <span style={{ color: '#858585', marginLeft: 8 }}>{s.thread}</span>
+                  {s.locals && Object.keys(s.locals).length > 0 && (
+                    <pre>{JSON.stringify(s.locals, null, 1).slice(0, 2000)}</pre>
+                  )}
                 </div>
-                <div className="custom-api-call">
-                  <h4>Custom API Call</h4>
-                  <div className="custom-api-form">
-                    <select
-                      value={customEndpoint.method}
-                      onChange={(e) => setCustomEndpoint({ ...customEndpoint, method: e.target.value })}
-                    >
-                      <option>GET</option>
-                      <option>POST</option>
-                      <option>PUT</option>
-                      <option>DELETE</option>
-                    </select>
-                    <input
-                      type="text"
-                      placeholder="/api/users or /api/users/1"
-                      value={customEndpoint.path}
-                      onChange={(e) => setCustomEndpoint({ ...customEndpoint, path: e.target.value })}
-                    />
-                    {(customEndpoint.method === 'POST' || customEndpoint.method === 'PUT') && (
-                      <textarea
-                        placeholder='{"name": "User", "email": "user@example.com", "age": 25}'
-                        value={customEndpoint.body}
-                        onChange={(e) => setCustomEndpoint({ ...customEndpoint, body: e.target.value })}
-                        rows="3"
-                      />
-                    )}
-                    <button onClick={handleCustomApiCall} disabled={apiLoading} className="api-btn">
-                      Send Request
-                    </button>
-                  </div>
-                </div>
-                {apiLoading && (
-                  <div className="api-loading">Loading...</div>
-                )}
-                {apiResponse && (
-                  <div className="api-response">
-                    <h4>Server Response:</h4>
-                    <pre>{JSON.stringify(apiResponse, null, 2)}</pre>
-                  </div>
-                )}
-              </div>
-            </div>
+              ))}
+            </Card>
+          )}
 
-            <div className="panel logs-panel">
-              <div className="panel-header">
-                <h2>Debug Logs</h2>
-                <button onClick={() => setLogs([])} className="refresh-btn">Clear</button>
+          {/* CLUSTER */}
+          {nav === 'cluster' && (
+            <Card title="Kubernetes cluster">
+              <div className="grid2">
+                <Field label="Context">
+                  <select value={ctx} onChange={(e) => { setCtx(e.target.value); loadNamespaces() }}>
+                    <option value="">— select context —</option>
+                    {ctxList.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </Field>
+                <Field label="Namespace">
+                  <input value={ns} onChange={(e) => setNs(e.target.value)} placeholder="default" />
+                </Field>
               </div>
-              <div className="logs-list-scrollable">
-                {logs.length === 0 ? (
-                  <div className="info-text">No logs yet. Debugging actions will appear here.</div>
-                ) : (
-                  logs.map((log, idx) => (
-                    <div key={idx} className={`log-item log-${log.type}`}>
-                      <div className="log-header">
-                        <span className="log-time">{log.timestamp}</span>
-                        <span className="log-title">{log.title}</span>
-                      </div>
-                      {log.data && Object.keys(log.data).length > 0 && typeof log.data === 'object' && (
-                        <pre className="log-data">{JSON.stringify(log.data, null, 2)}</pre>
-                      )}
-                      {log.data && typeof log.data === 'string' && (
-                        <div className="log-data-text">{log.data}</div>
-                      )}
-                    </div>
-                  ))
-                )}
-                      </div>
-            </div>
-          </div>
-        </div>
-      )}
+              <div className="toolbar">
+                <Btn onClick={() => { loadContexts(); loadNamespaces() }}>Refresh</Btn>
+                <Btn kind="primary" disabled={!connected} onClick={discoverPods}>Discover pods</Btn>
+              </div>
+              {pods.map((pd) => (
+                <div key={pd.name} className="list-row">
+                  <span>{pd.running ? '🟢' : '⚪'} {pd.name}</span>
+                  <Btn kind="primary" onClick={() => attachToPod(pd.name, pd.jdwpPort)}>Attach</Btn>
+                </div>
+              ))}
+            </Card>
+          )}
+
+          {/* API CLIENT */}
+          {nav === 'api' && (
+            <Card title="API client">
+              <div className="grid2">
+                <Field label="Method">
+                  <select value={method} onChange={(e) => setMethod(e.target.value)}>
+                    {['GET', 'POST', 'PUT', 'DELETE'].map((m) => <option key={m}>{m}</option>)}
+                  </select>
+                </Field>
+                <Field label="URL"><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="/path" /></Field>
+              </div>
+              <Field label="Headers (JSON)"><input value={hdrs} onChange={(e) => setHdrs(e.target.value)} placeholder='{"key": "value"}' /></Field>
+              <Field label="Body (JSON)"><input value={bdy} onChange={(e) => setBdy(e.target.value)} placeholder='{"key": "value"}' /></Field>
+              <Btn onClick={handleCustomApiCall}>Send</Btn>
+              {apiResponse && <pre className="code-block small">{JSON.stringify(apiResponse, null, 2).slice(0, 3000)}</pre>}
+            </Card>
+          )}
+        </main>
+
+        {/* PANIC button floating bottom-right */}
+        {connected && (
+          <button className="panic-fab" onClick={panicStop}
+            title="Resume all threads, remove all BPs, detach from VM">🚨 PANIC</button>
+        )}
+      </div>
     </div>
   )
 }
